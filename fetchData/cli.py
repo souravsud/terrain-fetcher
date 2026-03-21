@@ -31,44 +31,51 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Starting index used for naming outputs (applies to single and batch modes)",
     )
 
-    parser.add_argument("--dem-name", default="glo_30", help="DEM source name")
+    parser.add_argument(
+        "--config",
+        help="Path to a YAML configuration file. CLI flags override values from the file.",
+    )
+    parser.add_argument("--dem-name", default=None, help="DEM source name (default: glo_30)")
     parser.add_argument(
         "--side-km",
         type=float,
-        default=50.0,
-        help="Side length in kilometers for square extraction around each point",
+        default=None,
+        help="Side length in kilometers for square extraction around each point (default: 50.0)",
     )
     parser.add_argument(
         "--area-or-point",
         choices=["Area", "Point"],
-        default="Point",
-        help="AREA_OR_POINT tag written into output DEM metadata",
+        default=None,
+        help="AREA_OR_POINT tag written into output DEM metadata (default: Point)",
     )
     parser.add_argument(
         "--ellipsoidal-height",
         action="store_true",
+        default=None,
         help="Use ellipsoidal heights while requesting DEM data",
     )
     parser.add_argument(
         "--roughness-map",
         action="store_true",
+        default=None,
         help="Also fetch and generate the aerodynamic roughness map",
     )
     parser.add_argument(
         "--show-plots",
         action="store_true",
+        default=None,
         help="Save debug plot PNGs for generated rasters",
     )
     parser.add_argument(
         "--save-raw-files",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="Whether to also save EPSG:4326 raw rasters (default: true)",
     )
     parser.add_argument(
         "--verbose",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="Enable verbose logging (default: true)",
     )
     parser.add_argument(
@@ -81,21 +88,42 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _build_config(args: argparse.Namespace) -> DownloadConfig:
-    return DownloadConfig(
-        dem_name=args.dem_name,
-        dst_ellipsoidal_height=args.ellipsoidal_height,
-        dst_area_or_point=args.area_or_point,
-        side_length_km=args.side_km,
-        include_roughness_map=args.roughness_map,
-        verbose=args.verbose,
-        show_plots=args.show_plots,
-        save_raw_files=args.save_raw_files,
-    )
+    """Build a DownloadConfig from CLI arguments, optionally merging a YAML file.
+
+    A YAML file (``--config``) provides the base settings.  Any CLI flag that
+    is explicitly provided on the command line overrides the corresponding YAML
+    value.  If neither is provided, the ``DownloadConfig`` field default applies.
+    """
+    if args.config:
+        from .config import load_config
+        cfg = load_config(args.config)
+    else:
+        cfg = DownloadConfig()
+
+    # Override with explicitly supplied CLI flags (non-None values)
+    if args.dem_name is not None:
+        cfg.dem_name = args.dem_name
+    if args.ellipsoidal_height is not None:
+        cfg.dst_ellipsoidal_height = args.ellipsoidal_height
+    if args.area_or_point is not None:
+        cfg.dst_area_or_point = args.area_or_point
+    if args.side_km is not None:
+        cfg.side_length_km = args.side_km
+    if args.roughness_map is not None:
+        cfg.include_roughness_map = args.roughness_map
+    if args.verbose is not None:
+        cfg.verbose = args.verbose
+    if args.show_plots is not None:
+        cfg.show_plots = args.show_plots
+    if args.save_raw_files is not None:
+        cfg.save_raw_files = args.save_raw_files
+
+    return cfg
 
 
-def _resolve_coordinates(args: argparse.Namespace) -> list[tuple[float, float]]:
+def _resolve_coordinates(args: argparse.Namespace, config) -> list[tuple[float, float]]:
     if args.csv:
-        return load_coordinates_from_csv(args.csv, verbose=args.verbose)
+        return load_coordinates_from_csv(args.csv, verbose=config.verbose)
 
     if args.lon is None:
         raise ValueError("--lon is required when --lat is provided")
@@ -107,14 +135,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    try:
-        coordinates = _resolve_coordinates(args)
-    except ValueError as exc:
-        parser.error(str(exc))
-
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     config = _build_config(args)
+
+    try:
+        coordinates = _resolve_coordinates(args, config)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Import raster download utilities only when execution is requested.
     from .download_raster import DEMDownloader, create_output_dir

@@ -1,0 +1,30 @@
+# terrain-fetcher configuration file
+# All keys are optional. Omitted keys fall back to their built-in defaults.
+# Pass this file to the CLI with: --config config.yaml
+
+# ---------------------------------------------------------------------------
+# DEM settings
+# ---------------------------------------------------------------------------
+dem_name: glo_30            # DEM dataset name understood by dem-stitcher
+ellipsoidal_height: false   # true → request ellipsoidal heights
+area_or_point: Point        # metadata tag written into output GeoTIFFs ("Area" or "Point")
+side_km: 50.0               # side length of the square extraction window in kilometres
+
+# ---------------------------------------------------------------------------
+# Roughness map settings
+# ---------------------------------------------------------------------------
+roughness_map: false        # true → also download and convert ESA WorldCover to z0
+worldcover_version: v100    # ESA WorldCover release tag (e.g. v100, v200)
+worldcover_year: 2020       # ESA WorldCover data year
+land_cover_table: GWA4      # windkit land-cover lookup table used for z0 conversion
+
+# ---------------------------------------------------------------------------
+# Output settings
+# ---------------------------------------------------------------------------
+save_raw_files: true        # true → also save EPSG:4326 (raw) rasters alongside UTM output
+
+# ---------------------------------------------------------------------------
+# Debug / logging settings
+# ---------------------------------------------------------------------------
+verbose: true               # true → print progress messages to stdout
+show_plots: false           # true → save PNG plots of generated rasters
