@@ -8,7 +8,6 @@ Installable extraction of the `fetchData` package from the CFD dataset pipeline.
 - Roughness-map generation from ESA WorldCover
 - Raster reprojection to local UTM CRS
 - CSV coordinate loading helpers
-- Wind direction generation helpers
 
 ## Package layout
 
