@@ -18,6 +18,7 @@ dependencies = [
   "matplotlib",
   "numpy",
   "pyproj",
+  "pyyaml",
   "rasterio",
   "requests",
   "shapely",
