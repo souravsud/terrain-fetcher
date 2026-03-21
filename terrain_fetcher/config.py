@@ -4,12 +4,12 @@ Usage
 -----
 Create a YAML file (e.g. ``config.yaml``) and pass it to ``load_config``::
 
-    from fetchData.config import load_config
+    from terrain_fetcher.config import load_config
 
     cfg = load_config("config.yaml")
 
-The returned :class:`~fetchData.download_config.DownloadConfig` object can be
-passed directly to :class:`~fetchData.download_raster.DEMDownloader` or to the
+The returned :class:`~terrain_fetcher.download_config.DownloadConfig` object can be
+passed directly to :class:`~terrain_fetcher.download_raster.DEMDownloader` or to the
 CLI via ``--config config.yaml``.
 
 Supported YAML keys (all optional; defaults match ``DownloadConfig`` defaults)

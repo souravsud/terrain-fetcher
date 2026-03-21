@@ -29,7 +29,7 @@ def __getattr__(name):
         from .download_raster import DEMDownloader
 
         return DEMDownloader
-    raise AttributeError(f"module 'fetchData' has no attribute {name!r}")
+    raise AttributeError(f"module 'terrain_fetcher' has no attribute {name!r}")
 
 
 __all__ = [
