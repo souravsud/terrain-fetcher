@@ -1,6 +1,6 @@
 # terrain-fetcher
 
-Installable extraction of the `terrain_fetcher` package from the CFD dataset pipeline.
+Installable extraction of the `terrain_fetcher` package
 
 ## What this package provides
 
@@ -8,23 +8,7 @@ Installable extraction of the `terrain_fetcher` package from the CFD dataset pip
 - Roughness-map generation from ESA WorldCover
 - Raster reprojection to local UTM CRS
 - CSV coordinate loading helpers
-- Wind direction generation helpers
 - YAML-based configuration loading
-
-## Package layout
-
-```text
-terrain_fetcher/
-  __init__.py
-  config.py           ← YAML config loader
-  csv_utils.py
-  download_config.py
-  download_raster.py
-  parameter_generation.py
-  reproject_raster.py
-config.yaml           ← example / default configuration file
-main.py               ← root entry point
-```
 
 ## Installation
 
@@ -104,9 +88,3 @@ from terrain_fetcher.parameter_generation import generate_directions
 
 cfg = load_config("config.yaml")
 ```
-
-## Notes
-
-- The import package name is `terrain_fetcher`.
-- The package now lives at the repository root instead of under `src/`.
-- All CLI parsing lives in `main.py`; `terrain_fetcher/` is a pure library package.
