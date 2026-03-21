@@ -13,10 +13,10 @@ def repo_root_on_path():
     # No cleanup — keeping root on path is harmless within the test session.
 
 
-def test_fetchdata_imports():
-    from fetchData import DownloadConfig, create_output_dir, download_raster_data, load_config
-    from fetchData.csv_utils import load_coordinates_from_csv
-    from fetchData.parameter_generation import generate_directions
+def test_terrain_fetcher_imports():
+    from terrain_fetcher import DownloadConfig, create_output_dir, download_raster_data, load_config
+    from terrain_fetcher.csv_utils import load_coordinates_from_csv
+    from terrain_fetcher.parameter_generation import generate_directions
 
     assert DownloadConfig is not None
     assert create_output_dir is not None
@@ -27,7 +27,7 @@ def test_fetchdata_imports():
 
 
 def test_download_config_new_fields():
-    from fetchData import DownloadConfig
+    from terrain_fetcher import DownloadConfig
 
     cfg = DownloadConfig()
     assert cfg.worldcover_version == "v100"
@@ -37,7 +37,7 @@ def test_download_config_new_fields():
 
 def test_load_config_defaults(tmp_path):
     """load_config with an empty YAML file returns all DownloadConfig defaults."""
-    from fetchData.config import load_config
+    from terrain_fetcher.config import load_config
 
     empty_yaml = tmp_path / "empty.yaml"
     empty_yaml.write_text("{}\n")
@@ -58,7 +58,7 @@ def test_load_config_defaults(tmp_path):
 
 def test_load_config_overrides(tmp_path):
     """load_config correctly maps all supported YAML keys."""
-    from fetchData.config import load_config
+    from terrain_fetcher.config import load_config
 
     yaml_content = """
 dem_name: nasadem
@@ -92,7 +92,7 @@ show_plots: true
 
 def test_load_config_missing_file(tmp_path):
     """load_config raises FileNotFoundError for a non-existent path."""
-    from fetchData.config import load_config
+    from terrain_fetcher.config import load_config
 
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "this_file_does_not_exist.yaml")
@@ -100,7 +100,7 @@ def test_load_config_missing_file(tmp_path):
 
 def test_load_config_partial(tmp_path):
     """load_config handles a YAML file with only some keys set."""
-    from fetchData.config import load_config
+    from terrain_fetcher.config import load_config
 
     yaml_content = "side_km: 100.0\nroughness_map: true\n"
     cfg_file = tmp_path / "partial.yaml"

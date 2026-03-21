@@ -185,7 +185,7 @@ def download_square_data(
     center_lon, center_lat:
         Centre coordinates in decimal degrees (WGS-84).
     config:
-        A :class:`~fetchData.download_config.DownloadConfig` instance.
+        A :class:`~terrain_fetcher.download_config.DownloadConfig` instance.
     out_dir:
         Directory where output files are written.
 

@@ -48,8 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     start_index = int(raw.get("start_index", 0))
 
     # --- Download settings (loaded via DownloadConfig) ---
-    from fetchData.config import load_config
-    from fetchData.csv_utils import load_coordinates_from_csv
+    from terrain_fetcher.config import load_config
+    from terrain_fetcher.csv_utils import load_coordinates_from_csv
 
     cfg = load_config(config_path)
 
@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # --- Import raster download utilities only when coordinates are confirmed ---
-    from fetchData.download_raster import DEMDownloader, create_output_dir
+    from terrain_fetcher.download_raster import DEMDownloader, create_output_dir
 
     output_root.mkdir(parents=True, exist_ok=True)
     downloader = DEMDownloader(cfg)

@@ -1,6 +1,6 @@
-# cfd-fetchdata
+# terrain-fetcher
 
-Installable extraction of the `fetchData` package from the CFD dataset pipeline.
+Installable extraction of the `terrain_fetcher` package from the CFD dataset pipeline.
 
 ## What this package provides
 
@@ -14,7 +14,7 @@ Installable extraction of the `fetchData` package from the CFD dataset pipeline.
 ## Package layout
 
 ```text
-fetchData/
+terrain_fetcher/
   __init__.py
   config.py           ← YAML config loader
   csv_utils.py
@@ -58,7 +58,7 @@ python main.py
 You can also invoke the package directly (equivalent):
 
 ```bash
-python -m fetchData config.yaml
+python -m terrain_fetcher config.yaml
 ```
 
 ## Configuration
@@ -98,15 +98,15 @@ All keys are optional; omitted keys fall back to the `DownloadConfig` defaults.
 ## Programmatic usage
 
 ```python
-from fetchData import DownloadConfig, create_output_dir, download_raster_data, load_config
-from fetchData.csv_utils import load_coordinates_from_csv
-from fetchData.parameter_generation import generate_directions
+from terrain_fetcher import DownloadConfig, create_output_dir, download_raster_data, load_config
+from terrain_fetcher.csv_utils import load_coordinates_from_csv
+from terrain_fetcher.parameter_generation import generate_directions
 
 cfg = load_config("config.yaml")
 ```
 
 ## Notes
 
-- The import package name remains `fetchData` to keep existing consumer code unchanged.
+- The import package name is `terrain_fetcher`.
 - The package now lives at the repository root instead of under `src/`.
-- All CLI parsing lives in `main.py`; `fetchData/` is a pure library package.
+- All CLI parsing lives in `main.py`; `terrain_fetcher/` is a pure library package.

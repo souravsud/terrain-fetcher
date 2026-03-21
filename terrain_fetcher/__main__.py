@@ -1,4 +1,4 @@
-"""Enables: python -m fetchData [config.yaml]
+"""Enables: python -m terrain_fetcher [config.yaml]
 
 Delegates to the root ``main.py`` entry point.
 """
