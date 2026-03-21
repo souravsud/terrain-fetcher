@@ -1,5 +1,16 @@
 import pytest
 from pathlib import Path
+import sys
+
+
+@pytest.fixture(autouse=False)
+def repo_root_on_path():
+    """Ensure the repository root is importable so ``main`` can be imported."""
+    root = str(Path(__file__).parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    yield
+    # No cleanup — keeping root on path is harmless within the test session.
 
 
 def test_fetchdata_imports():
@@ -101,3 +112,37 @@ def test_load_config_partial(tmp_path):
     # Unspecified fields retain defaults
     assert cfg.dem_name == "glo_30"
     assert cfg.verbose is True
+
+
+# ---------------------------------------------------------------------------
+# main.py entry-point tests
+# ---------------------------------------------------------------------------
+
+def test_main_missing_config_file(tmp_path, repo_root_on_path):
+    """main() returns exit code 1 when the config file does not exist."""
+    from main import main
+
+    rc = main([str(tmp_path / "nonexistent.yaml")])
+    assert rc == 1
+
+
+def test_main_no_coordinates(tmp_path, repo_root_on_path):
+    """main() returns exit code 1 when neither csv nor lat/lon is provided."""
+    from main import main
+
+    cfg_file = tmp_path / "no_coords.yaml"
+    cfg_file.write_text("dem_name: glo_30\n")
+
+    rc = main([str(cfg_file)])
+    assert rc == 1
+
+
+def test_main_default_config_path(monkeypatch, tmp_path, repo_root_on_path):
+    """main() uses 'config.yaml' as the default config path."""
+    from main import main
+
+    # Change working directory to tmp_path; no config.yaml present → should return 1
+    monkeypatch.chdir(tmp_path)
+    rc = main([])
+    assert rc == 1
+

@@ -1,30 +1,42 @@
 # terrain-fetcher configuration file
-# All keys are optional. Omitted keys fall back to their built-in defaults.
-# Pass this file to the CLI with: --config config.yaml
+# Run with: python main.py config.yaml
+
+# ---------------------------------------------------------------------------
+# Coordinate source  (one of: csv  OR  lat + lon)
+# ---------------------------------------------------------------------------
+# csv: coordinates.csv        # path to a CSV file with 'lat' and 'lon' columns
+lat: 39.71121111              # single-location latitude  (used when 'csv' is not set)
+lon: -7.73483333              # single-location longitude
+
+# ---------------------------------------------------------------------------
+# Run settings
+# ---------------------------------------------------------------------------
+output_root: out              # root folder where per-location output directories are created
+start_index: 0                # starting index used for output file/folder naming
 
 # ---------------------------------------------------------------------------
 # DEM settings
 # ---------------------------------------------------------------------------
-dem_name: glo_30            # DEM dataset name understood by dem-stitcher
-ellipsoidal_height: false   # true → request ellipsoidal heights
-area_or_point: Point        # metadata tag written into output GeoTIFFs ("Area" or "Point")
-side_km: 50.0               # side length of the square extraction window in kilometres
+dem_name: glo_30              # DEM dataset name understood by dem-stitcher
+ellipsoidal_height: false     # true → request ellipsoidal heights
+area_or_point: Point          # metadata tag written into output GeoTIFFs ("Area" or "Point")
+side_km: 50.0                 # side length of the square extraction window in kilometres
 
 # ---------------------------------------------------------------------------
 # Roughness map settings
 # ---------------------------------------------------------------------------
-roughness_map: false        # true → also download and convert ESA WorldCover to z0
-worldcover_version: v100    # ESA WorldCover release tag (e.g. v100, v200)
-worldcover_year: 2020       # ESA WorldCover data year
-land_cover_table: GWA4      # windkit land-cover lookup table used for z0 conversion
+roughness_map: false          # true → also download and convert ESA WorldCover to z0
+worldcover_version: v100      # ESA WorldCover release tag (e.g. v100, v200)
+worldcover_year: 2020         # ESA WorldCover data year
+land_cover_table: GWA4        # windkit land-cover lookup table used for z0 conversion
 
 # ---------------------------------------------------------------------------
-# Output settings
+# Output options
 # ---------------------------------------------------------------------------
-save_raw_files: true        # true → also save EPSG:4326 (raw) rasters alongside UTM output
+save_raw_files: true          # true → also save EPSG:4326 (raw) rasters alongside UTM output
 
 # ---------------------------------------------------------------------------
 # Debug / logging settings
 # ---------------------------------------------------------------------------
-verbose: true               # true → print progress messages to stdout
-show_plots: false           # true → save PNG plots of generated rasters
+verbose: true                 # true → print progress messages to stdout
+show_plots: false             # true → save PNG plots of generated rasters
