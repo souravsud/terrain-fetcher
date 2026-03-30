@@ -16,13 +16,11 @@ def repo_root_on_path():
 def test_terrain_fetcher_imports():
     from terrain_fetcher import DownloadConfig, create_output_dir, download_raster_data, load_config
     from terrain_fetcher.csv_utils import load_coordinates_from_csv
-    from terrain_fetcher.parameter_generation import generate_directions
 
     assert DownloadConfig is not None
     assert create_output_dir is not None
     assert download_raster_data is not None
     assert load_coordinates_from_csv is not None
-    assert generate_directions is not None
     assert load_config is not None
 
 
