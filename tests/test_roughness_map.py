@@ -7,16 +7,24 @@ These tests inspect and validate:
   3. The code→z0 mapping itself – including the edge-cases that can produce
      "fishy" (NaN) roughness values in the output raster.
 
-Run all offline unit tests::
+Diagnostic plots are written to ``tests/plots/`` (created automatically) every
+time the relevant tests run.  View them directly after a test run::
 
     pytest tests/test_roughness_map.py -v -s
+    # → tests/plots/lookup_table_GWA4.png
+    # → tests/plots/synthetic_patch.png
 
-Run the optional network integration test as well::
+For the network-dependent integration plots (real WorldCover tiles)::
 
     pytest tests/test_roughness_map.py -v -s --integration
+    # → tests/plots/real_<label>.png  (one per parametrized location)
 
 """
 
+from pathlib import Path
+
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import windkit as wk
@@ -38,6 +46,24 @@ ESA_WORLDCOVER_CLASSES: dict[int, str] = {
     95: "Mangroves",
     100: "Moss and lichen",
 }
+
+# Official ESA WorldCover per-class colors (from the product specification)
+_LC_COLORS: dict[int, str] = {
+    10: "#006400",
+    20: "#FFBB22",
+    30: "#FFFF4C",
+    40: "#F096FF",
+    50: "#FA0000",
+    60: "#B4B4B4",
+    70: "#F0F0F0",
+    80: "#0064C8",
+    90: "#0096A0",
+    95: "#00CF75",
+    100: "#FAE6A0",
+}
+
+# Directory where all diagnostic plots are written
+_PLOTS_DIR = Path(__file__).parent / "plots"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +138,131 @@ def _print_lookup_table(table_name: str = "GWA4") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Plot helpers – all figures saved to tests/plots/ (created automatically)
+# ---------------------------------------------------------------------------
+
+def _get_plots_dir() -> Path:
+    """Return (and create) the directory where diagnostic plots are saved."""
+    _PLOTS_DIR.mkdir(exist_ok=True)
+    return _PLOTS_DIR
+
+
+def _plot_lookup_table_bar_chart(table_name: str = "GWA4") -> None:
+    """Save a horizontal bar chart of z0 values for the standard WorldCover
+    classes in *table_name*.
+
+    File: ``tests/plots/lookup_table_{table_name}.png``
+    """
+    plt.switch_backend("Agg")
+
+    lc_code_to_z0 = _build_lc_code_to_z0(table_name)
+
+    codes = sorted(c for c in ESA_WORLDCOVER_CLASSES if c in lc_code_to_z0)
+    labels = [f"{c}: {ESA_WORLDCOVER_CLASSES[c]}" for c in codes]
+    z0_vals = [lc_code_to_z0[c] or 0.0 for c in codes]
+    colors = [_LC_COLORS.get(c, "#888888") for c in codes]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.barh(labels, z0_vals, color=colors, edgecolor="0.3", linewidth=0.6)
+    ax.set_xlabel("Aerodynamic roughness length  z₀  (m)", fontsize=11)
+    ax.set_title(
+        f"GWA4 landcover → z₀ lookup table\n"
+        f"Source: windkit.get_landcover_table('{table_name}')  "
+        f"[windkit=={wk.__version__}]",
+        fontsize=10,
+    )
+    ax.bar_label(bars, fmt="%.4g", padding=4, fontsize=9)
+    ax.set_xlim(right=ax.get_xlim()[1] * 1.18)  # room for bar labels
+    ax.invert_yaxis()
+
+    fig.tight_layout()
+    out_path = _get_plots_dir() / f"lookup_table_{table_name}.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved lookup table plot → {out_path}")
+
+
+def _plot_landcover_and_roughness(
+    lc_data: np.ndarray,
+    lc_code_to_z0: dict,
+    title_prefix: str,
+    out_stem: str,
+) -> None:
+    """Save a side-by-side figure: landcover classification and roughness map.
+
+    Left panel – categorical landcover map coloured with official ESA WorldCover
+    colours; unknown/nodata pixels shown in grey.
+
+    Right panel – continuous roughness length z₀ map (viridis); NaN pixels
+    (unmapped codes) highlighted in red with an annotation.
+
+    Parameters
+    ----------
+    lc_data:
+        2-D ``uint8`` array of ESA WorldCover class codes.
+    lc_code_to_z0:
+        Mapping from class code to z₀ value (from :func:`_build_lc_code_to_z0`).
+    title_prefix:
+        Short descriptor used in subplot titles.
+    out_stem:
+        Output filename stem (without extension).  Saved under ``tests/plots/``.
+    """
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+
+    plt.switch_backend("Agg")
+
+    z0_data = np.vectorize(lambda c: lc_code_to_z0.get(int(c)))(lc_data).astype(float)
+    unique_codes = sorted(int(c) for c in np.unique(lc_data))
+
+    # --- build discrete colormap from official ESA colours ---
+    palette = [_LC_COLORS.get(c, "#888888") for c in unique_codes]
+    cmap_lc = ListedColormap(palette)
+    bounds_lc = [c - 0.5 for c in unique_codes] + [unique_codes[-1] + 0.5]
+    norm_lc = BoundaryNorm(bounds_lc, len(unique_codes))
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Panel 1: landcover classification
+    axes[0].imshow(lc_data, cmap=cmap_lc, norm=norm_lc, interpolation="nearest")
+    axes[0].set_title(f"{title_prefix}\nLandcover classification (ESA WorldCover)")
+    axes[0].set_xlabel("pixel column")
+    axes[0].set_ylabel("pixel row")
+    patches = [
+        mpatches.Patch(
+            color=palette[i],
+            label=f"{c}: {ESA_WORLDCOVER_CLASSES.get(c, 'Unknown/nodata')}",
+        )
+        for i, c in enumerate(unique_codes)
+    ]
+    axes[0].legend(handles=patches, loc="upper right", fontsize=7, framealpha=0.85)
+
+    # Panel 2: roughness length z0
+    cmap_z0 = plt.cm.viridis.copy()
+    cmap_z0.set_bad(color="red", alpha=0.8)  # NaN → red
+    im = axes[1].imshow(z0_data, cmap=cmap_z0, interpolation="nearest")
+    axes[1].set_title(f"{title_prefix}\nRoughness length  z₀  (m)")
+    axes[1].set_xlabel("pixel column")
+    axes[1].set_ylabel("pixel row")
+    plt.colorbar(im, ax=axes[1], label="z₀ (m)", shrink=0.85)
+
+    nan_count = int(np.isnan(z0_data).sum())
+    if nan_count:
+        axes[1].text(
+            0.02, 0.02,
+            f"⚠ {nan_count} NaN pixel(s) – unmapped code",
+            transform=axes[1].transAxes,
+            fontsize=8, color="red", va="bottom",
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85),
+        )
+
+    fig.tight_layout()
+    out_path = _get_plots_dir() / f"{out_stem}.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved landcover + roughness plot → {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # Fixture: gate integration tests behind the --integration CLI flag
 # (the option itself is declared in conftest.py)
 # ---------------------------------------------------------------------------
@@ -180,6 +331,17 @@ class TestLandcoverLookupTable:
         captured = capsys.readouterr()
         assert "windkit" in captured.out
         assert "GWA4" in captured.out
+
+    def test_plot_lookup_table_bar_chart(self):
+        """Save a bar-chart of z0 values for all standard WorldCover classes.
+
+        Output: ``tests/plots/lookup_table_GWA4.png``
+        Run ``pytest -s`` to see the saved path printed to stdout.
+        """
+        _plot_lookup_table_bar_chart("GWA4")
+        out_path = _PLOTS_DIR / "lookup_table_GWA4.png"
+        assert out_path.exists(), f"Expected plot not found at {out_path}"
+        assert out_path.stat().st_size > 0, "Plot file is empty"
 
 
 # ===========================================================================
@@ -314,6 +476,15 @@ class TestZ0MappingWithSyntheticData:
         assert "Landcover classification breakdown" in captured.out
         assert "NOT IN LOOKUP" in captured.out  # 255 is absent from GWA4
 
+        # --- save diagnostic plots ---
+        _plot_landcover_and_roughness(
+            lc_data, lc_code_to_z0,
+            title_prefix="Synthetic 4×5 patch",
+            out_stem="synthetic_patch",
+        )
+        out_path = _PLOTS_DIR / "synthetic_patch.png"
+        assert out_path.exists(), f"Expected plot not found at {out_path}"
+
 
 # ===========================================================================
 # 3. Integration test – real WorldCover tile download (requires network)
@@ -419,6 +590,17 @@ class TestRoughnessMapRealCoordinates:
             f"lookup: {unmapped}. These pixels will become NaN in the roughness "
             f"map – this is likely the cause of the 'fishy' roughness values."
         )
+
+        # --- save diagnostic plots ---
+        import re
+        out_stem = "real_" + re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        _plot_landcover_and_roughness(
+            data_lc, lc_code_to_z0,
+            title_prefix=f"{label}  ({side_km} km × {side_km} km)",
+            out_stem=out_stem,
+        )
+        out_path = _PLOTS_DIR / f"{out_stem}.png"
+        assert out_path.exists(), f"Expected plot not found at {out_path}"
 
         captured = capsys.readouterr()
         assert label in captured.out
