@@ -7,12 +7,18 @@ These tests inspect and validate:
   3. The code→z0 mapping itself – including the edge-cases that can produce
      "fishy" (NaN) roughness values in the output raster.
 
+Quality and mapping tests are parametrized over every supported table
+(``GWA4`` via windkit and ``custom`` via ``landcover_roughness.csv``) so that
+both tables are held to exactly the same correctness bar automatically.
+
 Diagnostic plots are written to ``tests/plots/`` (created automatically) every
 time the relevant tests run.  View them directly after a test run::
 
     pytest tests/test_roughness_map.py -v -s
     # → tests/plots/lookup_table_GWA4.png
-    # → tests/plots/synthetic_patch.png
+    # → tests/plots/lookup_table_custom.png
+    # → tests/plots/synthetic_patch_GWA4.png
+    # → tests/plots/synthetic_patch_custom.png
 
 For the network-dependent integration plots (real WorldCover tiles)::
 
@@ -66,6 +72,17 @@ _LC_COLORS: dict[int, str] = {
 
 # Directory where all diagnostic plots are written
 _PLOTS_DIR = Path(__file__).parent / "plots"
+
+#: Path to the default custom lookup file shipped with the repository.
+_REPO_CUSTOM_TABLE = Path(__file__).parent.parent / "landcover_roughness.csv"
+
+#: Parametrize params covering every supported table configuration.
+#: Used by TestLookupTableQuality and TestZ0MappingWithSyntheticData so that
+#: both tables are validated by exactly the same test logic.
+_TABLE_PARAMS = [
+    pytest.param("GWA4", None, id="GWA4"),
+    pytest.param("custom", str(_REPO_CUSTOM_TABLE), id="custom"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -319,90 +336,96 @@ def integration(request):
 
 
 # ===========================================================================
-# 1. Lookup table unit tests (no network required)
+# 1. Lookup table quality tests (parametrized over all supported tables)
 # ===========================================================================
 
-class TestLandcoverLookupTable:
-    """Validate the landcover → z0 lookup table used by the roughness pipeline."""
+class TestLookupTableQuality:
+    """Quality bar for every supported lookup table.
 
-    def test_table_loads_successfully(self):
-        """get_landcover_table('GWA4') returns a non-empty mapping."""
-        lct = wk.get_landcover_table("GWA4")
-        assert len(lct) > 0, "Landcover table must not be empty"
+    The same six checks run against both ``GWA4`` (from windkit) and the
+    ``custom`` table (``landcover_roughness.csv``) so neither table can regress
+    without the tests catching it.
+    """
 
-    def test_all_worldcover_codes_present(self):
-        """Every standard ESA WorldCover class code has a z0 entry in GWA4.
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_table_loads_successfully(self, table_name, custom_path):
+        """Table returns a non-empty mapping."""
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
+        assert len(lc_code_to_z0) > 0, f"Lookup table '{table_name}' must not be empty"
+
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_all_worldcover_codes_present(self, table_name, custom_path):
+        """Every standard ESA WorldCover class code has a z0 entry.
 
         A missing code means those pixels will map to None and end up as NaN
         (or garbage) in the final float32 roughness raster – the most likely
         cause of 'fishy' roughness values.
         """
-        lc_code_to_z0 = _build_lc_code_to_z0("GWA4")
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
         missing = [
             f"{code} ({ESA_WORLDCOVER_CLASSES[code]})"
             for code in ESA_WORLDCOVER_CLASSES
             if code not in lc_code_to_z0
         ]
         assert missing == [], (
-            f"ESA WorldCover codes with no z0 mapping in GWA4: {missing}. "
+            f"ESA WorldCover codes with no z0 mapping in '{table_name}': {missing}. "
             "Pixels with these codes will silently become NaN in the roughness map."
         )
 
-    def test_z0_values_are_non_negative(self):
-        """All z0 values in GWA4 must be ≥ 0."""
-        lc_code_to_z0 = _build_lc_code_to_z0("GWA4")
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_z0_values_are_non_negative(self, table_name, custom_path):
+        """All z0 values must be ≥ 0."""
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
         negative = {k: v for k, v in lc_code_to_z0.items() if v is not None and v < 0}
-        assert negative == {}, f"Negative z0 values found: {negative}"
+        assert negative == {}, f"Negative z0 values found in '{table_name}': {negative}"
 
-    def test_z0_values_are_physically_plausible(self):
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_z0_values_are_physically_plausible(self, table_name, custom_path):
         """z0 values should be within physically observed range (0–5 m)."""
-        lc_code_to_z0 = _build_lc_code_to_z0("GWA4")
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
         out_of_range = {
-            k: v
-            for k, v in lc_code_to_z0.items()
-            if v is not None and v > 5.0
+            k: v for k, v in lc_code_to_z0.items() if v is not None and v > 5.0
         }
         assert out_of_range == {}, (
-            f"Unexpectedly large z0 values (> 5 m): {out_of_range}"
+            f"Unexpectedly large z0 values (> 5 m) in '{table_name}': {out_of_range}"
         )
 
-    def test_lookup_table_verbose(self, capsys):
-        """Print a full diagnostic of all landcover codes, z0 values, and source.
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_verbose_print_mentions_source(self, table_name, custom_path, capsys):
+        """Diagnostic print output identifies the table name and its source.
 
         Run ``pytest -s`` to see the output.
         """
-        _print_lookup_table("GWA4")
+        _print_lookup_table(table_name, custom_path=custom_path)
         captured = capsys.readouterr()
-        assert "windkit" in captured.out
-        assert "GWA4" in captured.out
+        assert table_name in captured.out
+        # GWA4 comes from windkit; custom comes from the file
+        expected_source = "windkit" if table_name != "custom" else Path(custom_path).name
+        assert expected_source in captured.out
 
-    def test_plot_lookup_table_bar_chart(self):
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_plot_bar_chart(self, table_name, custom_path):
         """Save a bar-chart of z0 values for all standard WorldCover classes.
 
-        Output: ``tests/plots/lookup_table_GWA4.png``
+        Output: ``tests/plots/lookup_table_{table_name}.png``
         Run ``pytest -s`` to see the saved path printed to stdout.
         """
-        _plot_lookup_table_bar_chart("GWA4")
-        out_path = _PLOTS_DIR / "lookup_table_GWA4.png"
+        _plot_lookup_table_bar_chart(table_name, custom_path=custom_path)
+        out_path = _PLOTS_DIR / f"lookup_table_{table_name}.png"
         assert out_path.exists(), f"Expected plot not found at {out_path}"
         assert out_path.stat().st_size > 0, "Plot file is empty"
 
 
 # ===========================================================================
-# 2. Custom land-cover table tests (no network required)
+# 2. Custom-table-specific tests (no network required)
 # ===========================================================================
 
-#: Path to the default custom lookup file shipped with the repository.
-_REPO_CUSTOM_TABLE = Path(__file__).parent.parent / "landcover_roughness.csv"
+class TestCustomLandcoverTableOnly:
+    """Tests that are specific to the custom file-based table only.
 
-
-class TestCustomLandcoverTable:
-    """Validate the custom land-cover → z0 lookup table shipped with the repo
-    (``landcover_roughness.csv``) and the :func:`load_custom_landcover_table`
-    parser.
-
-    These tests mirror :class:`TestLandcoverLookupTable` so that the custom
-    table is held to exactly the same quality bar as the built-in GWA4 table.
+    These cover properties that have no equivalent for windkit built-in tables:
+    the CSV file must exist on disk and must include a fallback entry for
+    unrecognised class codes.
     """
 
     def test_custom_table_file_exists(self):
@@ -411,92 +434,12 @@ class TestCustomLandcoverTable:
             f"Default custom table not found at {_REPO_CUSTOM_TABLE}"
         )
 
-    def test_custom_table_loads_successfully(self):
-        """load_custom_landcover_table returns a non-empty mapping."""
-        table = load_custom_landcover_table(_REPO_CUSTOM_TABLE)
-        assert len(table) > 0, "Custom table must not be empty"
-
-    def test_custom_table_all_worldcover_codes_present(self):
-        """Every standard ESA WorldCover class code has a z0 entry.
-
-        Missing codes will silently produce NaN pixels in the roughness raster.
-        """
-        lc_code_to_z0 = _build_lc_code_to_z0("custom", custom_path=str(_REPO_CUSTOM_TABLE))
-        missing = [
-            f"{code} ({ESA_WORLDCOVER_CLASSES[code]})"
-            for code in ESA_WORLDCOVER_CLASSES
-            if code not in lc_code_to_z0
-        ]
-        assert missing == [], (
-            f"ESA WorldCover codes with no z0 mapping in custom table: {missing}. "
-            "Pixels with these codes will silently become NaN in the roughness map."
-        )
-
-    def test_custom_table_z0_values_are_non_negative(self):
-        """All z0 values in the custom table must be ≥ 0."""
-        lc_code_to_z0 = _build_lc_code_to_z0("custom", custom_path=str(_REPO_CUSTOM_TABLE))
-        negative = {k: v for k, v in lc_code_to_z0.items() if v < 0}
-        assert negative == {}, f"Negative z0 values found in custom table: {negative}"
-
-    def test_custom_table_z0_values_are_physically_plausible(self):
-        """z0 values should be within physically observed range (0–5 m)."""
-        lc_code_to_z0 = _build_lc_code_to_z0("custom", custom_path=str(_REPO_CUSTOM_TABLE))
-        out_of_range = {k: v for k, v in lc_code_to_z0.items() if v > 5.0}
-        assert out_of_range == {}, (
-            f"Unexpectedly large z0 values (> 5 m) in custom table: {out_of_range}"
-        )
-
-    def test_custom_table_fallback_code_present(self):
+    def test_custom_fallback_code_present(self):
         """Class 999 (Unknown / unclassified) must exist as a fallback entry."""
         table = load_custom_landcover_table(_REPO_CUSTOM_TABLE)
         assert 999 in table, (
             "Custom table must include class 999 as the fallback for unrecognised codes."
         )
-
-    def test_custom_table_verbose(self, capsys):
-        """Print a full diagnostic of all codes, z0 values, and source.
-
-        Run ``pytest -s`` to see the output.
-        """
-        _print_lookup_table("custom", custom_path=str(_REPO_CUSTOM_TABLE))
-        captured = capsys.readouterr()
-        assert "custom" in captured.out
-        assert "landcover_roughness.csv" in captured.out
-
-    def test_custom_table_plot_bar_chart(self):
-        """Save a bar-chart of z0 values for all standard WorldCover classes.
-
-        Output: ``tests/plots/lookup_table_custom.png``
-        Run ``pytest -s`` to see the saved path printed to stdout.
-        """
-        _plot_lookup_table_bar_chart("custom", custom_path=str(_REPO_CUSTOM_TABLE))
-        out_path = _PLOTS_DIR / "lookup_table_custom.png"
-        assert out_path.exists(), f"Expected plot not found at {out_path}"
-        assert out_path.stat().st_size > 0, "Plot file is empty"
-
-    def test_custom_table_vectorized_mapping(self):
-        """The custom table z0 dict works correctly with np.vectorize."""
-        lc_code_to_z0 = _build_lc_code_to_z0("custom", custom_path=str(_REPO_CUSTOM_TABLE))
-
-        codes = np.array(
-            [[10, 30, 50],
-             [80, 60, 40],
-             [90, 70, 100]],
-            dtype=np.uint8,
-        )
-        z0_array = np.vectorize(lc_code_to_z0.get)(codes)
-        z0_f32 = z0_array.astype(np.float32)
-
-        # No NaN pixels – all standard WorldCover codes are covered
-        assert not np.any(np.isnan(z0_f32)), (
-            "Custom table produced NaN pixels for standard WorldCover codes. "
-            "Check that all ESA class IDs are present in landcover_roughness.csv."
-        )
-
-        # Spot-check individual values against the loaded table (not hardcoded magic
-        # numbers) so the test stays valid if the CSV values are ever revised.
-        assert z0_f32[0, 0] == pytest.approx(lc_code_to_z0[10], rel=1e-5)   # Tree cover
-        assert z0_f32[1, 0] == pytest.approx(lc_code_to_z0[80], rel=1e-5)   # Water bodies
 
 
 # ===========================================================================
@@ -504,11 +447,16 @@ class TestCustomLandcoverTable:
 # ===========================================================================
 
 class TestZ0MappingWithSyntheticData:
-    """Test the vectorised code→z0 mapping with controlled landcover arrays."""
+    """Test the vectorised code→z0 mapping with controlled landcover arrays.
 
-    def test_known_codes_map_to_expected_z0(self):
+    All tests are parametrized over both supported tables so that the mapping
+    mechanics are validated regardless of which table is used.
+    """
+
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_known_codes_map_to_expected_z0(self, table_name, custom_path):
         """Each WorldCover pixel code produces the correct z0 value."""
-        lc_code_to_z0 = _build_lc_code_to_z0("GWA4")
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
 
         # Build a small array covering several WorldCover classes
         codes = np.array(
@@ -530,12 +478,13 @@ class TestZ0MappingWithSyntheticData:
                     f"expected z0={expected}, got {actual}"
                 )
 
-    def test_uint8_keys_resolve_correctly(self):
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_uint8_keys_resolve_correctly(self, table_name, custom_path):
         """Dict keys are Python ints; numpy uint8 values must still look them up."""
-        lc_code_to_z0 = _build_lc_code_to_z0("GWA4")
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
 
         # Confirm that a numpy uint8 pixel code finds the Python-int dict key
-        pixel_uint8 = np.uint8(50)  # "Built-up"
+        pixel_uint8 = np.uint8(50)  # "Built-up" – present in every supported table
         result = lc_code_to_z0.get(pixel_uint8)
         assert result is not None, (
             "numpy uint8(50) failed to match the Python int key 50 in the "
@@ -543,10 +492,11 @@ class TestZ0MappingWithSyntheticData:
         )
         assert result == lc_code_to_z0[50]
 
-    def test_unknown_code_maps_to_none(self):
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_unknown_code_maps_to_none(self, table_name, custom_path):
         """A pixel code absent from the lookup returns None."""
-        lc_code_to_z0 = _build_lc_code_to_z0("GWA4")
-        unknown = 255  # common nodata value in uint8 rasters
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
+        unknown = 255  # common nodata value in uint8 rasters; absent from all tables
         assert unknown not in lc_code_to_z0, (
             "Precondition: choose a code that genuinely isn't in the table"
         )
@@ -557,16 +507,17 @@ class TestZ0MappingWithSyntheticData:
             "Unknown code should map to None; it will become NaN when cast to float32."
         )
 
-    def test_none_becomes_nan_in_float32(self):
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_none_becomes_nan_in_float32(self, table_name, custom_path):
         """None values silently become NaN (not 0) when the array is cast to float32.
 
         This is almost certainly the source of 'fishy' roughness values: any pixel
         whose WorldCover code is missing from the lookup table ends up as NaN in the
         output raster instead of raising an error.
         """
-        lc_code_to_z0 = _build_lc_code_to_z0("GWA4")
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
 
-        unknown = 255  # nodata / unrecognised code
+        unknown = 255  # nodata / unrecognised code; absent from all tables
         codes = np.array([[50, unknown]], dtype=np.uint8)
         z0_raw = np.vectorize(lc_code_to_z0.get)(codes)
         z0_f32 = z0_raw.astype(np.float32)
@@ -580,29 +531,36 @@ class TestZ0MappingWithSyntheticData:
             "have NaN patches – the likely cause of 'fishy' values."
         )
 
-    def test_landcover_breakdown_of_synthetic_patch(self, capsys):
+    @pytest.mark.parametrize("table_name, custom_path", _TABLE_PARAMS)
+    def test_landcover_breakdown_of_synthetic_patch(
+        self, table_name, custom_path, capsys
+    ):
         """Print a per-code breakdown for a synthetic landcover array.
 
         This mirrors what you would see for a real tile – run with ``pytest -s``
         to inspect the diagnostic output.
         """
-        lc_code_to_z0 = _build_lc_code_to_z0("GWA4")
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
 
         # Simulate a small patch with realistic WorldCover codes plus a nodata pixel
         lc_data = np.array(
             [[30, 30, 40, 40, 50],
              [30, 10, 10, 40, 50],
              [80, 80, 30, 40, 60],
-             [80, 80, 30, 30, 255]],  # 255 = nodata / unknown
+             [80, 80, 30, 30, 255]],  # 255 = nodata / unknown; absent from all tables
             dtype=np.uint8,
         )
 
         unique_codes, counts = np.unique(lc_data, return_counts=True)
         total = lc_data.size
 
+        if table_name == "custom":
+            table_info = f"custom file: {Path(custom_path).name}"
+        else:
+            table_info = f"windkit=={wk.__version__}"
         _print_breakdown_header(
             "Landcover classification breakdown  (synthetic 4×5 patch)",
-            extra_lines=[f"Lookup table used: 'GWA4'  (windkit=={wk.__version__})"],
+            extra_lines=[f"Lookup table used: '{table_name}'  ({table_info})"],
         )
         print(f"{'Code':>6}  {'Pixels':>7}  {'%':>6}  {'z0 (m)':>8}  Class description")
         print(_divider("-"))
@@ -629,15 +587,15 @@ class TestZ0MappingWithSyntheticData:
 
         captured = capsys.readouterr()
         assert "Landcover classification breakdown" in captured.out
-        assert "NOT IN LOOKUP" in captured.out  # 255 is absent from GWA4
+        assert "NOT IN LOOKUP" in captured.out  # 255 is absent from every table
 
         # --- save diagnostic plots ---
         _plot_landcover_and_roughness(
             lc_data, lc_code_to_z0,
-            title_prefix="Synthetic 4×5 patch",
-            out_stem="synthetic_patch",
+            title_prefix=f"Synthetic 4×5 patch ({table_name})",
+            out_stem=f"synthetic_patch_{table_name}",
         )
-        out_path = _PLOTS_DIR / "synthetic_patch.png"
+        out_path = _PLOTS_DIR / f"synthetic_patch_{table_name}.png"
         assert out_path.exists(), f"Expected plot not found at {out_path}"
 
 
@@ -848,6 +806,7 @@ class TestRoughnessMapFromConfig:
         import yaml
         from pathlib import Path as _Path
         from shapely.geometry import Polygon
+        from terrain_fetcher.config import _DEFAULT_CUSTOM_TABLE_FILENAME
 
         # Read WorldCover settings from the config (fall back to defaults)
         with _Path(config_path).open() as fh:
@@ -867,7 +826,7 @@ class TestRoughnessMapFromConfig:
                 custom_path = str(_Path(raw_path))
             else:
                 # Default: landcover_roughness.csv next to the config file
-                custom_path = str(_Path(config_path).parent / "landcover_roughness.csv")
+                custom_path = str(_Path(config_path).parent / _DEFAULT_CUSTOM_TABLE_FILENAME)
 
         lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
         grid_url = _WORLDCOVER_GRID_URL.format(version=version, year=year)
