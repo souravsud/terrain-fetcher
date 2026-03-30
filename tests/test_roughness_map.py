@@ -604,3 +604,194 @@ class TestRoughnessMapRealCoordinates:
 
         captured = capsys.readouterr()
         assert label in captured.out
+
+
+# ===========================================================================
+# 4. Integration test – coordinates from the user's config file
+# ===========================================================================
+
+def _load_coordinates_from_config(config_path: str) -> list[tuple[float, float, str]]:
+    """Parse a terrain-fetcher YAML config and return ``[(lat, lon, label), …]``.
+
+    Supports both input methods accepted by the main application:
+
+    * ``lat`` + ``lon`` keys  – yields a single entry labelled "Config (lat, lon)"
+    * ``csv`` key             – delegates to
+      :func:`terrain_fetcher.csv_utils.load_coordinates_from_csv` and labels
+      each row "Config row N (lat, lon)"
+
+    Returns an empty list when neither ``lat``/``lon`` nor ``csv`` is present.
+    """
+    import yaml
+    from pathlib import Path as _Path
+
+    cfg_path = _Path(config_path)
+    with cfg_path.open() as fh:
+        data = yaml.safe_load(fh) or {}
+
+    coords: list[tuple[float, float, str]] = []
+
+    if "csv" in data:
+        # Resolve relative CSV path against the config file's directory
+        csv_path = _Path(data["csv"])
+        if not csv_path.is_absolute():
+            csv_path = cfg_path.parent / csv_path
+
+        from terrain_fetcher.csv_utils import load_coordinates_from_csv
+        raw = load_coordinates_from_csv(str(csv_path))
+        for idx, (lat, lon) in enumerate(raw):
+            coords.append((lat, lon, f"Config row {idx + 1}  ({lat}, {lon})"))
+
+    elif "lat" in data and "lon" in data:
+        lat, lon = float(data["lat"]), float(data["lon"])
+        coords.append((lat, lon, f"Config  ({lat}, {lon})"))
+
+    return coords
+
+
+class TestRoughnessMapFromConfig:
+    """Integration test that validates WorldCover data for the coordinates
+    defined in the user's own config file.
+
+    Requires both ``--integration`` (network access) and ``--config PATH``
+    (path to a terrain-fetcher YAML config).  The test is silently skipped
+    when either flag is absent or when the config contains no coordinates.
+
+    Run::
+
+        pytest tests/test_roughness_map.py --integration --config config.yaml -v -s
+    """
+
+    def test_landcover_and_roughness_from_config(self, request, capsys):
+        """For each coordinate found in ``--config``, download WorldCover tiles,
+        validate the z₀ mapping, and save diagnostic plots to ``tests/plots/``.
+
+        *Skipped* when ``--integration`` is absent, ``--config`` is absent, or
+        the config file contains no parseable coordinates.
+        """
+        if not request.config.getoption("--integration"):
+            pytest.skip("Pass --integration to run network-dependent tests.")
+
+        config_path = request.config.getoption("--config")
+        if not config_path:
+            pytest.skip("Pass --config PATH to run the config-coordinates test.")
+
+        coords = _load_coordinates_from_config(config_path)
+        if not coords:
+            pytest.skip(
+                f"Config file '{config_path}' contains no parseable coordinates "
+                "(expected 'lat'+'lon' keys or a 'csv' key)."
+            )
+
+        from terrain_fetcher.download_raster import (
+            _WORLDCOVER_GRID_URL,
+            _calculate_bounds,
+            stitch_tiles,
+        )
+        import geopandas as gpd
+        import re
+        import yaml
+        from pathlib import Path as _Path
+        from shapely.geometry import Polygon
+
+        # Read WorldCover settings from the config (fall back to defaults)
+        with _Path(config_path).open() as fh:
+            cfg_data = yaml.safe_load(fh) or {}
+        table_name = cfg_data.get("land_cover_table", "GWA4")
+        version = cfg_data.get("worldcover_version", "v100")
+        year = int(cfg_data.get("worldcover_year", 2020))
+        # Cap side_km at 20 km so integration tests stay fast regardless of
+        # the value set in the config (which may be much larger, e.g. 50 km).
+        side_km = min(float(cfg_data.get("side_km", 10.0)), 20.0)
+
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name)
+        grid_url = _WORLDCOVER_GRID_URL.format(version=version, year=year)
+        grid = gpd.read_file(grid_url)
+
+        failures: list[str] = []
+
+        for lat, lon, label in coords:
+            bounds, corners = _calculate_bounds(side_km, lat, lon)
+
+            _print_breakdown_header(
+                f"Location  : {label}",
+                extra_lines=[
+                    f"Bounds    : {bounds}",
+                    f"Area      : {side_km} km × {side_km} km",
+                    f"Source    : ESA WorldCover {year} {version}",
+                    f"Grid URL  : {grid_url}",
+                    f"LC table  : windkit.get_landcover_table('{table_name}')",
+                    f"windkit   : {wk.__version__}",
+                ],
+            )
+
+            aoi = Polygon([(lon_, lat_) for lat_, lon_ in corners])
+            tiles = grid[grid.intersects(aoi)].ll_tile.tolist()
+            print(f"\n  WorldCover tiles required: {tiles}")
+
+            data_lc, _profile = stitch_tiles(tiles, version, year, bounds)
+
+            unique_codes, counts = np.unique(data_lc, return_counts=True)
+            total = data_lc.size
+
+            print(
+                f"\n  Raw WorldCover breakdown  "
+                f"({data_lc.shape[0]}×{data_lc.shape[1]} pixels)"
+            )
+            print(
+                f"  {'Code':>6}  {'Pixels':>8}  {'%':>6}  {'z0 (m)':>8}  "
+                f"Class description"
+            )
+            print("  " + _divider("-"))
+            any_missing = False
+            for code, count in zip(unique_codes, counts):
+                z0 = lc_code_to_z0.get(int(code))
+                desc = ESA_WORLDCOVER_CLASSES.get(int(code), "Unknown / nodata")
+                flag = "  ← NOT IN LOOKUP → NaN" if z0 is None else ""
+                if z0 is None:
+                    any_missing = True
+                print(
+                    f"  {code:>6}  {count:>8}  {100*count/total:>5.1f}%  "
+                    f"{str(z0):>8}  {desc}{flag}"
+                )
+
+            print()
+            if any_missing:
+                print(
+                    "  ⚠  Codes absent from the lookup will become NaN in the "
+                    "roughness raster – likely source of 'fishy' values."
+                )
+            else:
+                print("  ✓ All codes in this tile have a valid z0 mapping.")
+            print(f"{_divider()}\n")
+
+            # Sanity checks (collect failures instead of stopping at the first)
+            if data_lc.size == 0:
+                failures.append(f"{label}: downloaded tile is empty")
+                continue
+
+            unmapped = [
+                int(c) for c in unique_codes if lc_code_to_z0.get(int(c)) is None
+            ]
+            if unmapped:
+                failures.append(
+                    f"{label}: codes {unmapped} present in tile but missing from "
+                    f"'{table_name}' – those pixels will become NaN in the "
+                    f"roughness map."
+                )
+
+            # Save diagnostic plots
+            out_stem = "config_" + re.sub(
+                r"[^a-z0-9]+", "_", label.lower()
+            ).strip("_")
+            _plot_landcover_and_roughness(
+                data_lc, lc_code_to_z0,
+                title_prefix=label,
+                out_stem=out_stem,
+            )
+
+        assert failures == [], "\n".join(failures)
+
+        captured = capsys.readouterr()
+        # At least the first coordinate's label must appear in the captured output
+        assert coords[0][2] in captured.out
