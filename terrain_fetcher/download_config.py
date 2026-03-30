@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -14,6 +16,9 @@ class DownloadConfig:
     worldcover_version: str = "v100"
     worldcover_year: int = 2020
     land_cover_table: str = "GWA4"
+    # Path to a custom land-cover → z0 CSV file.
+    # Required when land_cover_table == "custom"; ignored otherwise.
+    custom_land_cover_table_path: str | None = field(default=None)
 
     # Output options
     save_raw_files: bool = True

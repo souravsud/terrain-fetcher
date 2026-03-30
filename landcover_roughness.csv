@@ -1,0 +1,30 @@
+# WorldCover → aerodynamic roughness length (z0) [m]
+# Conservative values for CFD (neutral ABL)
+# Source logic: CORINE/WRF inspired, reduced to avoid over-roughness
+#
+# Used when land_cover_table: custom is set in config.yaml.
+# Place this file in the same directory as config.yaml, or set
+# custom_land_cover_table_path in config.yaml to point to another location.
+#
+# Format:
+#   class_id,z0,description
+#
+# class_id   z0 values are aerodynamic roughness lengths in metres.
+# Lines starting with '#' and blank lines are ignored.
+# Both comma-separated and whitespace-separated layouts are accepted.
+
+# class_id,z0,description
+10,0.6,Tree cover
+20,0.08,Shrubland
+30,0.03,Grassland
+40,0.07,Cropland
+50,0.6,Built-up
+60,0.01,Bare / sparse vegetation
+70,0.002,Snow and ice
+80,0.0002,Permanent water bodies
+90,0.08,Herbaceous wetland
+95,0.4,Mangroves
+100,0.015,Moss and lichen
+
+# Default fallback if class not found
+999,0.05,Unknown / unclassified
