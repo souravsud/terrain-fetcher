@@ -15,6 +15,7 @@ from rasterio.merge import merge
 from shapely.geometry import Polygon
 
 from .reproject_raster import get_utm_crs, reproject_raster_to_utm, save_utm_metadata
+from .lc_table import load_custom_landcover_table
 
 R = 6_371_000.0  # Earth's mean radius in meters
 
@@ -268,8 +269,20 @@ def download_square_data(
 
         data_lc, profile_lc = stitch_tiles(tiles, version, year, bounds)
 
-        lct = wk.get_landcover_table(config.land_cover_table)
-        source = f"{grid_url},{version},{year},{config.land_cover_table}"
+        lc_table_name = config.land_cover_table
+        if lc_table_name == "custom":
+            if not config.custom_land_cover_table_path:
+                raise ValueError(
+                    "land_cover_table is set to 'custom' but custom_land_cover_table_path "
+                    "is not set in the config."
+                )
+            lct = load_custom_landcover_table(config.custom_land_cover_table_path)
+            source = (
+                f"{grid_url},{version},{year},custom:{config.custom_land_cover_table_path}"
+            )
+        else:
+            lct = wk.get_landcover_table(lc_table_name)
+            source = f"{grid_url},{version},{year},{lc_table_name}"
 
         if verbose:
             print("Converting WorldCover classes to aerodynamic roughness length (z0)...")
