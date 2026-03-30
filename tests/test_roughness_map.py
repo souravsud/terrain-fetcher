@@ -29,6 +29,8 @@ import numpy as np
 import pytest
 import windkit as wk
 
+from terrain_fetcher.lc_table import load_custom_landcover_table
+
 # ---------------------------------------------------------------------------
 # Reference: ESA WorldCover 2020/2021 class codes and canonical descriptions
 # https://esa-worldcover.org/en/data
@@ -77,8 +79,16 @@ def _divider(char: str = "=") -> str:
     return char * _TABLE_WIDTH
 
 
-def _build_lc_code_to_z0(table_name: str = "GWA4") -> dict:
-    """Return the {landcover_code: z0} dict as built by download_square_data."""
+def _build_lc_code_to_z0(table_name: str = "GWA4", custom_path: str | None = None) -> dict:
+    """Return the {landcover_code: z0} dict as built by download_square_data.
+
+    When *table_name* is ``"custom"``, *custom_path* must point to a valid
+    land-cover CSV/text file; :func:`load_custom_landcover_table` is used to
+    parse it.  For all other names the table is fetched from windkit.
+    """
+    if table_name == "custom":
+        lct = load_custom_landcover_table(custom_path)
+        return {lc_id: params["z0"] for lc_id, params in lct.items()}
     lct = wk.get_landcover_table(table_name)
     return {
         lc_id: params.get("z0")
@@ -96,29 +106,52 @@ def _print_breakdown_header(title: str, extra_lines: list[str] | None = None) ->
     print(_divider())
 
 
-def _print_lookup_table(table_name: str = "GWA4") -> None:
-    """Pretty-print the complete landcover → z0 lookup table with source info."""
-    lct = wk.get_landcover_table(table_name)
-    lc_code_to_z0 = _build_lc_code_to_z0(table_name)
+def _print_lookup_table(table_name: str = "GWA4", custom_path: str | None = None) -> None:
+    """Pretty-print the complete landcover → z0 lookup table with source info.
 
-    _print_breakdown_header(
-        f"Landcover lookup table  :  '{table_name}'",
-        extra_lines=[
-            f"Source library          :  windkit=={wk.__version__}",
-            f"Table function          :  windkit.get_landcover_table('{table_name}')",
-            f"Number of entries       :  {len(lct)}",
-        ],
-    )
-    print(f"{'Code':>6}  {'z0 (m)':>8}  {'d (m)':>6}  Description")
-    print(_divider("-"))
-    for code in sorted(lct.keys()):
-        params = lct[code] or {}
-        z0 = lc_code_to_z0.get(code, "—")
-        d = params.get("d", "—")
-        desc = params.get("desc", "—")
-        worldcover_label = ESA_WORLDCOVER_CLASSES.get(code, "")
-        suffix = f"  [{worldcover_label}]" if worldcover_label else ""
-        print(f"{code:>6}  {str(z0):>8}  {str(d):>6}  {desc}{suffix}")
+    Supports both windkit built-in tables (e.g. ``"GWA4"``) and user-supplied
+    custom files (``table_name="custom"`` with *custom_path* set).
+    """
+    if table_name == "custom":
+        lct = load_custom_landcover_table(custom_path)
+        lc_code_to_z0 = {lc_id: params["z0"] for lc_id, params in lct.items()}
+        _print_breakdown_header(
+            f"Landcover lookup table  :  '{table_name}'",
+            extra_lines=[
+                f"Source file             :  {custom_path}",
+                f"Number of entries       :  {len(lct)}",
+            ],
+        )
+        print(f"{'Code':>6}  {'z0 (m)':>8}  Description")
+        print(_divider("-"))
+        for code in sorted(lct.keys()):
+            params = lct[code]
+            z0 = lc_code_to_z0.get(code, "—")
+            desc = params.get("description", "—")
+            worldcover_label = ESA_WORLDCOVER_CLASSES.get(code, "")
+            suffix = f"  [{worldcover_label}]" if worldcover_label else ""
+            print(f"{code:>6}  {str(z0):>8}  {desc}{suffix}")
+    else:
+        lct = wk.get_landcover_table(table_name)
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name)
+        _print_breakdown_header(
+            f"Landcover lookup table  :  '{table_name}'",
+            extra_lines=[
+                f"Source library          :  windkit=={wk.__version__}",
+                f"Table function          :  windkit.get_landcover_table('{table_name}')",
+                f"Number of entries       :  {len(lct)}",
+            ],
+        )
+        print(f"{'Code':>6}  {'z0 (m)':>8}  {'d (m)':>6}  Description")
+        print(_divider("-"))
+        for code in sorted(lct.keys()):
+            params = lct[code] or {}
+            z0 = lc_code_to_z0.get(code, "—")
+            d = params.get("d", "—")
+            desc = params.get("desc", "—")
+            worldcover_label = ESA_WORLDCOVER_CLASSES.get(code, "")
+            suffix = f"  [{worldcover_label}]" if worldcover_label else ""
+            print(f"{code:>6}  {str(z0):>8}  {str(d):>6}  {desc}{suffix}")
     print()
 
     missing = [
@@ -147,30 +180,41 @@ def _get_plots_dir() -> Path:
     return _PLOTS_DIR
 
 
-def _plot_lookup_table_bar_chart(table_name: str = "GWA4") -> None:
+def _plot_lookup_table_bar_chart(
+    table_name: str = "GWA4", custom_path: str | None = None
+) -> None:
     """Save a horizontal bar chart of z0 values for the standard WorldCover
     classes in *table_name*.
+
+    Supports both windkit built-in tables and custom file-based tables.
 
     File: ``tests/plots/lookup_table_{table_name}.png``
     """
     plt.switch_backend("Agg")
 
-    lc_code_to_z0 = _build_lc_code_to_z0(table_name)
+    lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
 
     codes = sorted(c for c in ESA_WORLDCOVER_CLASSES if c in lc_code_to_z0)
     labels = [f"{c}: {ESA_WORLDCOVER_CLASSES[c]}" for c in codes]
     z0_vals = [lc_code_to_z0[c] or 0.0 for c in codes]
     colors = [_LC_COLORS.get(c, "#888888") for c in codes]
 
+    if table_name == "custom":
+        title = (
+            f"Custom landcover → z₀ lookup table\n"
+            f"Source: {custom_path}"
+        )
+    else:
+        title = (
+            f"GWA4 landcover → z₀ lookup table\n"
+            f"Source: windkit.get_landcover_table('{table_name}')  "
+            f"[windkit=={wk.__version__}]"
+        )
+
     fig, ax = plt.subplots(figsize=(10, 6))
     bars = ax.barh(labels, z0_vals, color=colors, edgecolor="0.3", linewidth=0.6)
     ax.set_xlabel("Aerodynamic roughness length  z₀  (m)", fontsize=11)
-    ax.set_title(
-        f"GWA4 landcover → z₀ lookup table\n"
-        f"Source: windkit.get_landcover_table('{table_name}')  "
-        f"[windkit=={wk.__version__}]",
-        fontsize=10,
-    )
+    ax.set_title(title, fontsize=10)
     ax.bar_label(bars, fmt="%.4g", padding=4, fontsize=9)
     ax.set_xlim(right=ax.get_xlim()[1] * 1.18)  # room for bar labels
     ax.invert_yaxis()
@@ -345,7 +389,118 @@ class TestLandcoverLookupTable:
 
 
 # ===========================================================================
-# 2. Code → z0 mapping tests using synthetic landcover arrays
+# 2. Custom land-cover table tests (no network required)
+# ===========================================================================
+
+#: Path to the default custom lookup file shipped with the repository.
+_REPO_CUSTOM_TABLE = Path(__file__).parent.parent / "landcover_roughness.csv"
+
+
+class TestCustomLandcoverTable:
+    """Validate the custom land-cover → z0 lookup table shipped with the repo
+    (``landcover_roughness.csv``) and the :func:`load_custom_landcover_table`
+    parser.
+
+    These tests mirror :class:`TestLandcoverLookupTable` so that the custom
+    table is held to exactly the same quality bar as the built-in GWA4 table.
+    """
+
+    def test_custom_table_file_exists(self):
+        """landcover_roughness.csv must be present in the repository root."""
+        assert _REPO_CUSTOM_TABLE.exists(), (
+            f"Default custom table not found at {_REPO_CUSTOM_TABLE}"
+        )
+
+    def test_custom_table_loads_successfully(self):
+        """load_custom_landcover_table returns a non-empty mapping."""
+        table = load_custom_landcover_table(_REPO_CUSTOM_TABLE)
+        assert len(table) > 0, "Custom table must not be empty"
+
+    def test_custom_table_all_worldcover_codes_present(self):
+        """Every standard ESA WorldCover class code has a z0 entry.
+
+        Missing codes will silently produce NaN pixels in the roughness raster.
+        """
+        lc_code_to_z0 = _build_lc_code_to_z0("custom", custom_path=str(_REPO_CUSTOM_TABLE))
+        missing = [
+            f"{code} ({ESA_WORLDCOVER_CLASSES[code]})"
+            for code in ESA_WORLDCOVER_CLASSES
+            if code not in lc_code_to_z0
+        ]
+        assert missing == [], (
+            f"ESA WorldCover codes with no z0 mapping in custom table: {missing}. "
+            "Pixels with these codes will silently become NaN in the roughness map."
+        )
+
+    def test_custom_table_z0_values_are_non_negative(self):
+        """All z0 values in the custom table must be ≥ 0."""
+        lc_code_to_z0 = _build_lc_code_to_z0("custom", custom_path=str(_REPO_CUSTOM_TABLE))
+        negative = {k: v for k, v in lc_code_to_z0.items() if v < 0}
+        assert negative == {}, f"Negative z0 values found in custom table: {negative}"
+
+    def test_custom_table_z0_values_are_physically_plausible(self):
+        """z0 values should be within physically observed range (0–5 m)."""
+        lc_code_to_z0 = _build_lc_code_to_z0("custom", custom_path=str(_REPO_CUSTOM_TABLE))
+        out_of_range = {k: v for k, v in lc_code_to_z0.items() if v > 5.0}
+        assert out_of_range == {}, (
+            f"Unexpectedly large z0 values (> 5 m) in custom table: {out_of_range}"
+        )
+
+    def test_custom_table_fallback_code_present(self):
+        """Class 999 (Unknown / unclassified) must exist as a fallback entry."""
+        table = load_custom_landcover_table(_REPO_CUSTOM_TABLE)
+        assert 999 in table, (
+            "Custom table must include class 999 as the fallback for unrecognised codes."
+        )
+
+    def test_custom_table_verbose(self, capsys):
+        """Print a full diagnostic of all codes, z0 values, and source.
+
+        Run ``pytest -s`` to see the output.
+        """
+        _print_lookup_table("custom", custom_path=str(_REPO_CUSTOM_TABLE))
+        captured = capsys.readouterr()
+        assert "custom" in captured.out
+        assert "landcover_roughness.csv" in captured.out
+
+    def test_custom_table_plot_bar_chart(self):
+        """Save a bar-chart of z0 values for all standard WorldCover classes.
+
+        Output: ``tests/plots/lookup_table_custom.png``
+        Run ``pytest -s`` to see the saved path printed to stdout.
+        """
+        _plot_lookup_table_bar_chart("custom", custom_path=str(_REPO_CUSTOM_TABLE))
+        out_path = _PLOTS_DIR / "lookup_table_custom.png"
+        assert out_path.exists(), f"Expected plot not found at {out_path}"
+        assert out_path.stat().st_size > 0, "Plot file is empty"
+
+    def test_custom_table_vectorized_mapping(self):
+        """The custom table z0 dict works correctly with np.vectorize."""
+        lc_code_to_z0 = _build_lc_code_to_z0("custom", custom_path=str(_REPO_CUSTOM_TABLE))
+
+        codes = np.array(
+            [[10, 30, 50],
+             [80, 60, 40],
+             [90, 70, 100]],
+            dtype=np.uint8,
+        )
+        z0_array = np.vectorize(lc_code_to_z0.get)(codes)
+        z0_f32 = z0_array.astype(np.float32)
+
+        # No NaN pixels – all standard WorldCover codes are covered
+        assert not np.any(np.isnan(z0_f32)), (
+            "Custom table produced NaN pixels for standard WorldCover codes. "
+            "Check that all ESA class IDs are present in landcover_roughness.csv."
+        )
+
+        # Spot-check individual values against the loaded table (not hardcoded magic
+        # numbers) so the test stays valid if the CSV values are ever revised.
+        assert z0_f32[0, 0] == pytest.approx(lc_code_to_z0[10], rel=1e-5)   # Tree cover
+        assert z0_f32[1, 0] == pytest.approx(lc_code_to_z0[80], rel=1e-5)   # Water bodies
+
+
+# ===========================================================================
+# 3. Code → z0 mapping tests using synthetic landcover arrays
 # ===========================================================================
 
 class TestZ0MappingWithSyntheticData:
@@ -487,7 +642,7 @@ class TestZ0MappingWithSyntheticData:
 
 
 # ===========================================================================
-# 3. Integration test – real WorldCover tile download (requires network)
+# 4. Integration test – real WorldCover tile download (requires network)
 # ===========================================================================
 
 class TestRoughnessMapRealCoordinates:
@@ -607,7 +762,7 @@ class TestRoughnessMapRealCoordinates:
 
 
 # ===========================================================================
-# 4. Integration test – coordinates from the user's config file
+# 5. Integration test – coordinates from the user's config file
 # ===========================================================================
 
 def _load_coordinates_from_config(config_path: str) -> list[tuple[float, float, str]]:
@@ -704,7 +859,17 @@ class TestRoughnessMapFromConfig:
         # the value set in the config (which may be much larger, e.g. 50 km).
         side_km = min(float(cfg_data.get("side_km", 10.0)), 20.0)
 
-        lc_code_to_z0 = _build_lc_code_to_z0(table_name)
+        # Resolve the custom table path when table_name == "custom"
+        custom_path: str | None = None
+        if table_name == "custom":
+            raw_path = cfg_data.get("custom_land_cover_table_path")
+            if raw_path is not None:
+                custom_path = str(_Path(raw_path))
+            else:
+                # Default: landcover_roughness.csv next to the config file
+                custom_path = str(_Path(config_path).parent / "landcover_roughness.csv")
+
+        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
         grid_url = _WORLDCOVER_GRID_URL.format(version=version, year=year)
         grid = gpd.read_file(grid_url)
 
@@ -713,6 +878,10 @@ class TestRoughnessMapFromConfig:
         for lat, lon, label in coords:
             bounds, corners = _calculate_bounds(side_km, lat, lon)
 
+            if table_name == "custom":
+                lc_table_desc = f"custom file: {custom_path}"
+            else:
+                lc_table_desc = f"windkit.get_landcover_table('{table_name}')"
             _print_breakdown_header(
                 f"Location  : {label}",
                 extra_lines=[
@@ -720,9 +889,8 @@ class TestRoughnessMapFromConfig:
                     f"Area      : {side_km} km × {side_km} km",
                     f"Source    : ESA WorldCover {year} {version}",
                     f"Grid URL  : {grid_url}",
-                    f"LC table  : windkit.get_landcover_table('{table_name}')",
-                    f"windkit   : {wk.__version__}",
-                ],
+                    f"LC table  : {lc_table_desc}",
+                ] + ([] if table_name == "custom" else [f"windkit   : {wk.__version__}"]),
             )
 
             aoi = Polygon([(lon_, lat_) for lat_, lon_ in corners])
