@@ -18,7 +18,10 @@ def create_output_dir(lat, lon, index, root_folder):
 
 
 def download_square_data(index, center_lon, center_lat, config, out_dir="out"):
-    """Download DEM/roughness data for a square around one point."""
+    """Download DEM/roughness data for a square around one point.
+
+    Returns ``(dem_file, roughness_file | None, displacement_file | None)``.
+    """
     from .download_raster import download_square_data as _download_square_data
 
     return _download_square_data(index, center_lon, center_lat, config, out_dir)

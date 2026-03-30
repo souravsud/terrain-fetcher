@@ -600,7 +600,77 @@ class TestZ0MappingWithSyntheticData:
 
 
 # ===========================================================================
-# 4. Integration test – real WorldCover tile download (requires network)
+# 4. GWA4 bivariate ORA model tests (no network required)
+# ===========================================================================
+
+class TestGWA4CanopyBivariate:
+    """Unit tests for the direct ORA reclassification logic.
+
+    These tests exercise :func:`terrain_fetcher.download_raster._compute_ora_z0_d`
+    with synthetic landcover and canopy-height arrays, covering all branches of
+    the bivariate decision tree:
+
+    * Tree pixel + valid height  → ORA formula
+    * Tree pixel + zero height   → GWA4 fallback (z0=1.5, d=0)
+    * Tree pixel + NaN height    → GWA4 fallback (z0=1.5, d=0)
+    * Non-tree pixel             → lookup-table value
+    * Height above cap           → z0 clipped to 3.0
+    * Height above cap           → d clipped to 25.0
+    """
+
+    @pytest.fixture(autouse=True)
+    def _import_fn(self):
+        from terrain_fetcher.download_raster import _compute_ora_z0_d
+        self._fn = _compute_ora_z0_d
+
+    @pytest.fixture()
+    def gwa4_lct(self):
+        return wk.get_landcover_table("GWA4")
+
+    def _single(self, lc_code: int, h_val, lct):
+        """Run on a single pixel and return (z0, d) scalars."""
+        lc = np.array([[lc_code]], dtype=np.uint8)
+        h = None if h_val is None else np.array([[h_val]], dtype=np.float32)
+        z0_arr, d_arr = self._fn(lc, h, lct)
+        return float(z0_arr[0, 0]), float(d_arr[0, 0])
+
+    def test_tree_with_valid_height(self, gwa4_lct):
+        """Tree pixel (code 10) with h=15 m → ORA: z0=0.1×15=1.5, d=(2/3)×15=10.0."""
+        z0, d = self._single(10, 15.0, gwa4_lct)
+        assert z0 == pytest.approx(1.5, abs=1e-5), f"Expected z0=1.5, got {z0}"
+        assert d == pytest.approx(10.0, abs=1e-5), f"Expected d=10.0, got {d}"
+
+    def test_tree_with_zero_height(self, gwa4_lct):
+        """Tree pixel (code 10) with h=0 → fallback: z0=1.5, d=0.0."""
+        z0, d = self._single(10, 0.0, gwa4_lct)
+        assert z0 == pytest.approx(1.5, abs=1e-5), f"Expected fallback z0=1.5, got {z0}"
+        assert d == pytest.approx(0.0), f"Expected d=0.0, got {d}"
+
+    def test_tree_with_nan_height(self, gwa4_lct):
+        """Tree pixel (code 10) with h=NaN → fallback: z0=1.5, d=0.0."""
+        z0, d = self._single(10, float("nan"), gwa4_lct)
+        assert z0 == pytest.approx(1.5, abs=1e-5), f"Expected fallback z0=1.5, got {z0}"
+        assert d == pytest.approx(0.0), f"Expected d=0.0, got {d}"
+
+    def test_non_tree_pixel(self, gwa4_lct):
+        """Grassland pixel (code 30) → lookup: z0=0.03, d=0.0."""
+        z0, d = self._single(30, None, gwa4_lct)
+        assert z0 == pytest.approx(0.03, abs=1e-6), f"Expected z0=0.03, got {z0}"
+        assert d == pytest.approx(0.0), f"Expected d=0.0, got {d}"
+
+    def test_z0_physical_cap(self, gwa4_lct):
+        """Very tall tree (h=40 m) → z0 clipped to 3.0 m."""
+        z0, d = self._single(10, 40.0, gwa4_lct)
+        assert z0 == pytest.approx(3.0), f"Expected z0 clipped to 3.0, got {z0}"
+
+    def test_d_physical_cap(self, gwa4_lct):
+        """Very tall tree (h=50 m) → d clipped to 25.0 m."""
+        z0, d = self._single(10, 50.0, gwa4_lct)
+        assert d == pytest.approx(25.0), f"Expected d clipped to 25.0, got {d}"
+
+
+# ===========================================================================
+# 5. Integration test – real WorldCover tile download (requires network)
 # ===========================================================================
 
 class TestRoughnessMapRealCoordinates:
