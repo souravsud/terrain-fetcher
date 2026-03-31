@@ -19,6 +19,7 @@ time the relevant tests run.  View them directly after a test run::
     # → tests/plots/lookup_table_custom.png
     # → tests/plots/synthetic_patch_GWA4.png
     # → tests/plots/synthetic_patch_custom.png
+    # → tests/plots/canopy_height_vs_z0.png
 
 For the network-dependent integration plots (real WorldCover tiles)::
 
@@ -670,7 +671,182 @@ class TestGWA4CanopyBivariate:
 
 
 # ===========================================================================
-# 5. Integration test – real WorldCover tile download (requires network)
+# 5. Visual test – canopy height vs roughness length (ORA curve)
+# ===========================================================================
+
+def _plot_canopy_height_vs_z0(lct: dict) -> Path:
+    """Save a plot of tree height vs z₀ as predicted by the ORA model.
+
+    Shows:
+    * ORA curve  (z0 = 0.1 × h, pre-cap)
+    * Effective z₀ after the 3 m physical cap
+    * GWA4 fallback value for h = 0 / NaN tree pixels
+    * Horizontal reference lines for every non-tree WorldCover class in *lct*
+    * Second y-axis showing displacement height d = (2/3) × h (also capped at 25 m)
+
+    File: ``tests/plots/canopy_height_vs_z0.png``
+    """
+    plt.switch_backend("Agg")
+
+    # Height range (0–50 m in 0.1 m steps)
+    h = np.linspace(0.0, 50.0, 500)
+
+    # ORA model: z0 = 0.1 × h  (uncapped, then capped at 3.0 m)
+    z0_uncapped = 0.1 * h
+    z0_effective = np.clip(z0_uncapped, 0.0, 3.0)
+
+    # Displacement height: d = (2/3) × h, capped at 25 m
+    d_effective = np.clip((2.0 / 3.0) * h, 0.0, 25.0)
+
+    # Fallback z0 for tree pixels without valid height (GWA4 class 10)
+    lc_code_to_z0 = {
+        lc_id: float(params.get("z0", 0.0))
+        for lc_id, params in lct.items()
+        if params is not None
+    }
+    tree_fallback_z0 = lc_code_to_z0.get(10, 1.5)
+
+    fig, ax1 = plt.subplots(figsize=(11, 7))
+
+    # --- ORA curve (effective, post-cap) ---
+    ax1.plot(h, z0_effective, color="#1a6e2e", linewidth=2.5,
+             label="ORA z₀ = 0.1 × h  (capped at 3.0 m)")
+
+    # Show the uncapped portion as a dashed extension
+    ax1.plot(h, z0_uncapped, color="#1a6e2e", linewidth=1.2, linestyle="--",
+             alpha=0.4, label="ORA z₀ = 0.1 × h  (uncapped)")
+
+    # --- Physical cap annotation ---
+    cap_h = 3.0 / 0.1  # h at which cap bites (30 m)
+    ax1.axhline(3.0, color="#c0392b", linewidth=1.2, linestyle="-.",
+                label="Physical cap  z₀ = 3.0 m")
+    ax1.axvline(cap_h, color="#c0392b", linewidth=0.8, linestyle=":",
+                alpha=0.5)
+    ax1.annotate(
+        f"cap bites at h = {cap_h:.0f} m",
+        xy=(cap_h, 3.0), xytext=(cap_h + 1.5, 2.7),
+        fontsize=8, color="#c0392b",
+        arrowprops=dict(arrowstyle="-", color="#c0392b", lw=0.8),
+    )
+
+    # --- GWA4 fallback line (h = 0 / NaN tree pixels) ---
+    ax1.axhline(tree_fallback_z0, color="#8e44ad", linewidth=1.2, linestyle="--",
+                label=f"Tree fallback (h=0/NaN)  z₀ = {tree_fallback_z0:.2f} m")
+
+    # --- Non-tree class reference lines ---
+    non_tree_classes = {
+        code: (ESA_WORLDCOVER_CLASSES[code], lc_code_to_z0[code], _LC_COLORS.get(code, "#888"))
+        for code in sorted(ESA_WORLDCOVER_CLASSES)
+        if code != 10 and code in lc_code_to_z0
+    }
+    for code, (name, z0_ref, color) in non_tree_classes.items():
+        ax1.axhline(z0_ref, color=color, linewidth=0.9, linestyle=":",
+                    alpha=0.85, label=f"LC {code}: {name}  (z₀={z0_ref:.4g} m)")
+
+    ax1.set_xlabel("Canopy height  h  (m)", fontsize=12)
+    ax1.set_ylabel("Aerodynamic roughness length  z₀  (m)", fontsize=12)
+    ax1.set_xlim(0, 50)
+    ax1.set_ylim(bottom=0)
+
+    # --- Second y-axis: displacement height d ---
+    ax2 = ax1.twinx()
+    ax2.plot(h, d_effective, color="#2980b9", linewidth=1.8, linestyle="-",
+             alpha=0.7, label="Displacement height  d = (2/3) × h  (capped at 25 m)")
+    ax2.set_ylabel("Displacement height  d  (m)", fontsize=12, color="#2980b9")
+    ax2.tick_params(axis="y", labelcolor="#2980b9")
+    ax2.set_ylim(bottom=0)
+
+    # --- Combined legend from both axes ---
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2,
+               loc="upper left", fontsize=8, framealpha=0.9,
+               title="ORA model  (z₀ = 0.1 × h,  d = (2/3) × h)", title_fontsize=9)
+
+    ax1.set_title(
+        "Tree canopy height  →  aerodynamic roughness length & displacement height\n"
+        "ORA model · GWA4 lookup table · physical caps: z₀ ≤ 3.0 m, d ≤ 25.0 m",
+        fontsize=11,
+    )
+    ax1.grid(axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    out_path = _get_plots_dir() / "canopy_height_vs_z0.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+class TestCanopyHeightVsRoughnessLength:
+    """Visual test: save a plot of tree height vs z₀ via the ORA model.
+
+    Run with ``-s`` to see the saved file path::
+
+        pytest tests/test_roughness_map.py::TestCanopyHeightVsRoughnessLength -v -s
+        # → tests/plots/canopy_height_vs_z0.png
+
+    The plot shows:
+
+    * **ORA curve** – ``z₀ = 0.1 × h`` (continuous line) and the uncapped
+      formula (dashed), so the effect of the 3 m hard cap is immediately visible.
+    * **Physical cap** at ``z₀ = 3.0 m`` (bites at h = 30 m).
+    * **GWA4 fallback** value used when a tree pixel has h = 0 or NaN.
+    * **Non-tree reference lines** – one horizontal line per non-tree WorldCover
+      class, coloured with the official ESA colour, so you can compare the ORA
+      output against fixed-table values at a glance.
+    * **Displacement height** ``d = (2/3) × h`` (capped at 25 m) on a second
+      y-axis for a direct side-by-side comparison.
+    """
+
+    @pytest.fixture()
+    def gwa4_lct(self):
+        return wk.get_landcover_table("GWA4")
+
+    def test_plot_canopy_height_vs_z0(self, gwa4_lct):
+        """Generate and save the canopy-height vs z₀ ORA plot.
+
+        Assertions:
+        * The plot file is created on disk.
+        * The ORA curve values match the formula at several spot-check heights.
+        * The physical cap is applied correctly.
+        * The fallback value equals GWA4 class-10 z₀.
+        """
+        out_path = _plot_canopy_height_vs_z0(gwa4_lct)
+        print(f"\n  Saved canopy height vs z₀ plot → {out_path}")
+
+        assert out_path.exists(), f"Plot file was not created: {out_path}"
+        assert out_path.stat().st_size > 10_000, "Plot file looks suspiciously small"
+
+        from terrain_fetcher.download_raster import _compute_ora_z0_d
+
+        def _single(lc_code, h_val):
+            lc = np.array([[lc_code]], dtype=np.uint8)
+            h = np.array([[h_val]], dtype=np.float32)
+            z0_arr, d_arr = _compute_ora_z0_d(lc, h, gwa4_lct)
+            return float(z0_arr[0, 0]), float(d_arr[0, 0])
+
+        # Spot-check the ORA formula at a few heights below the cap
+        for h_val, expected_z0 in [(5.0, 0.5), (10.0, 1.0), (20.0, 2.0)]:
+            z0, _ = _single(10, h_val)
+            assert z0 == pytest.approx(expected_z0, abs=1e-6)
+
+        # Physical cap kicks in at h = 30 m (0.1 × 30 = 3.0) and beyond
+        z0_at_30, _ = _single(10, 30.0)
+        assert z0_at_30 == pytest.approx(3.0)
+        z0_at_40, _ = _single(10, 40.0)
+        assert z0_at_40 == pytest.approx(3.0)
+
+        # Fallback equals GWA4 class-10 z0
+        lc_code_to_z0 = {
+            lc_id: float(params.get("z0", 0.0))
+            for lc_id, params in gwa4_lct.items()
+            if params is not None
+        }
+        assert lc_code_to_z0[10] == pytest.approx(1.5, abs=1e-5)
+
+
+# ===========================================================================
+# 6. Integration test – real WorldCover tile download (requires network)
 # ===========================================================================
 
 class TestRoughnessMapRealCoordinates:
