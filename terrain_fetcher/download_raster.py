@@ -35,6 +35,7 @@ _ETH_CANOPY_URL = (
     "https://libdrive.ethz.ch/index.php/s/cO8or7iOe5dT2Fn"
     "/download?path=%2F3deg_cogs&files=ETH_GlobalCanopyHeight_10m_2020_{tile}_Map.tif"
 )
+_ETH_CANOPY_NODATA = 255  # ETH uint8 nodata sentinel
 
 
 class DEMDownloader:
@@ -186,30 +187,45 @@ def stitch_canopy_tiles(bounds: list) -> tuple[np.ndarray | None, dict | None]:
     tiles = _canopy_tile_names(bounds)
     tile_data: list[tuple[np.ndarray, dict]] = []
 
+    # OwnCloud/Nextcloud public-share download URLs (libdrive.ethz.ch) claim
+    # "Accept-Ranges: none" in HEAD responses, but they *do* honour Range:
+    # headers on actual GET requests.  Bypassing the HEAD probe
+    # (CPL_VSIL_CURL_USE_HEAD=NO) makes GDAL skip the broken HEAD step and
+    # issue a Range-GET directly against the COG, which succeeds.
+    gdal_opts = dict(
+        CPL_VSIL_CURL_USE_HEAD="NO",   # skip HEAD; go straight to Range-GET
+        GDAL_HTTP_TIMEOUT="30",         # abort any single request after 30 s
+        GDAL_HTTP_CONNECTTIMEOUT="10",  # fail-fast on unreachable hosts
+        GDAL_HTTP_MAX_RETRY="2",
+        GDAL_HTTP_RETRY_DELAY="3",
+    )
+
     for tile in tiles:
         url = _ETH_CANOPY_URL.format(tile=tile)
         vsi_url = f"/vsicurl/{url}"
         try:
-            with rasterio.open(vsi_url) as src:
-                win = rasterio.windows.from_bounds(
-                    min_lon, min_lat, max_lon, max_lat,
-                    src.transform,
-                ).round_lengths().round_offsets()
-                if win.width <= 0 or win.height <= 0:
-                    continue
-                # boundless=True fills any out-of-file pixels with the nodata value
-                data = src.read(1, window=win, boundless=True, fill_value=255)
-                tf = src.window_transform(win)
-                prof = src.profile.copy()
-                prof.update(
-                    height=data.shape[0],
-                    width=data.shape[1],
-                    transform=tf,
-                    dtype=rasterio.uint8,
-                    count=1,
-                    nodata=255,
-                )
-                tile_data.append((data, prof))
+            with rasterio.Env(**gdal_opts):
+                with rasterio.open(vsi_url) as src:
+                    win = rasterio.windows.from_bounds(
+                        min_lon, min_lat, max_lon, max_lat,
+                        src.transform,
+                    ).round_lengths().round_offsets()
+                    if win.width <= 0 or win.height <= 0:
+                        continue
+                    # boundless=True fills out-of-file pixels with nodata
+                    data = src.read(1, window=win, boundless=True,
+                                   fill_value=_ETH_CANOPY_NODATA)
+                    tf = src.window_transform(win)
+                    prof = src.profile.copy()
+                    prof.update(
+                        height=data.shape[0],
+                        width=data.shape[1],
+                        transform=tf,
+                        dtype=rasterio.uint8,
+                        count=1,
+                        nodata=_ETH_CANOPY_NODATA,
+                    )
+                    tile_data.append((data, prof))
         except Exception as exc:
             print(f"    Warning: ETH canopy tile {tile} unavailable: {exc}")
             continue
@@ -244,13 +260,13 @@ def stitch_canopy_tiles(bounds: list) -> tuple[np.ndarray | None, dict | None]:
                 transform=transform,
                 dtype=rasterio.uint8,
                 count=1,
-                nodata=255,
+                nodata=_ETH_CANOPY_NODATA,
             )
             data = mosaic[0]
 
-    # Replace ETH nodata (255) with NaN and convert to float32
+    # Replace ETH nodata with NaN and convert to float32
     data_f = data.astype(np.float32)
-    data_f[data_f == 255] = np.nan
+    data_f[data_f == _ETH_CANOPY_NODATA] = np.nan
     return data_f, prof
 
 

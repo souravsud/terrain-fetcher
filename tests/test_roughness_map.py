@@ -1025,7 +1025,110 @@ class TestCanopyHeightVsRoughnessLength:
 
 
 # ===========================================================================
-# 6. Integration test – real WorldCover tile download (requires network)
+# 6. Canopy tile-name logic (offline) and canopy download (integration)
+# ===========================================================================
+
+class TestCanopyTileNames:
+    """Offline unit tests for :func:`_canopy_tile_names`.
+
+    These tests verify that the 3°-snapped tile-name generator produces the
+    correct ETH filename stem for a given bounding box.  No network access is
+    required.
+    """
+
+    def test_berlin(self):
+        """Berlin (lat≈52.5, lon≈13.4) falls inside the N51E012 tile."""
+        from terrain_fetcher.download_raster import _canopy_tile_names
+        tiles = _canopy_tile_names([13.33, 52.48, 13.47, 52.57])
+        assert len(tiles) == 1, f"Expected 1 tile, got {tiles}"
+        assert tiles == ["N51E012"]
+
+    def test_portugal(self):
+        """Central Portugal (lat≈39.7, lon≈-7.7) falls inside the N39W009 tile."""
+        from terrain_fetcher.download_raster import _canopy_tile_names
+        tiles = _canopy_tile_names([-7.79, 39.67, -7.67, 39.76])
+        assert len(tiles) == 1, f"Expected 1 tile, got {tiles}"
+        assert tiles == ["N39W009"]
+
+    def test_southern_hemisphere(self):
+        """Southern-hemisphere tile name uses 'S' prefix."""
+        from terrain_fetcher.download_raster import _canopy_tile_names
+        # -3.5°, -60.5° → SW corner is S06W063
+        tiles = _canopy_tile_names([-60.5, -3.5, -60.4, -3.4])
+        assert len(tiles) == 1, f"Expected 1 tile, got {tiles}"
+        assert tiles == ["S06W063"]
+
+    def test_cross_3deg_lon_boundary(self):
+        """Bounds crossing a 3° longitude boundary produce two tile names."""
+        from terrain_fetcher.download_raster import _canopy_tile_names
+        # lon crosses 12° (a 3° multiple): tiles N51E009 and N51E012
+        tiles = _canopy_tile_names([11.9, 51.0, 12.1, 51.5])
+        assert set(tiles) == {"N51E009", "N51E012"}
+
+    def test_cross_3deg_lat_boundary(self):
+        """Bounds crossing a 3° latitude boundary produce two tile names."""
+        from terrain_fetcher.download_raster import _canopy_tile_names
+        # lat crosses 51° (a 3° multiple): tiles N48E012 and N51E012
+        tiles = _canopy_tile_names([12.0, 50.9, 12.5, 51.1])
+        assert set(tiles) == {"N48E012", "N51E012"}
+
+
+class TestCanopyDownloadIntegration:
+    """Integration test for :func:`stitch_canopy_tiles`.
+
+    Verifies that the ETH libdrive COG can actually be opened and a spatial
+    window read via GDAL vsicurl.  Requires ``--integration`` (network access).
+
+    Run::
+
+        pytest tests/test_roughness_map.py::TestCanopyDownloadIntegration -v -s --integration
+    """
+
+    def test_stitch_canopy_tiles_returns_float32_array(self, integration):
+        """stitch_canopy_tiles returns a float32 array for a known-coverage area.
+
+        Uses a small 6 km × 6 km window over the Spessart forest near Würzburg,
+        Germany.  This area falls cleanly inside the N48E009 ETH tile and has
+        substantial tree cover, so at least some valid (non-NaN) canopy heights
+        are expected.
+
+        Assertions
+        ----------
+        * The function does **not** return ``(None, None)`` – i.e. the COG was
+          successfully opened via vsicurl and the window read succeeded.
+        * The returned array is 2-D float32.
+        * At least one pixel has a finite, positive canopy height.
+        * The profile dict contains the expected rasterio keys.
+        """
+        from terrain_fetcher.download_raster import stitch_canopy_tiles
+
+        # Spessart forest, Bavaria – heavy coniferous cover, tile N48E009
+        bounds = [9.90, 49.80, 9.96, 49.86]
+
+        data, prof = stitch_canopy_tiles(bounds)
+
+        assert data is not None, (
+            "stitch_canopy_tiles returned None for the Spessart forest window.\n"
+            "Possible causes:\n"
+            "  1. Network unreachable (libdrive.ethz.ch DNS blocked).\n"
+            "  2. GDAL vsicurl cannot open the OwnCloud URL – check GDAL version "
+            "and CPL_VSIL_CURL_USE_HEAD setting.\n"
+            "  3. The ETH libdrive share has moved; verify the URL in _ETH_CANOPY_URL."
+        )
+        assert prof is not None
+        assert data.dtype == np.float32
+        assert data.ndim == 2
+        assert data.shape[0] > 0 and data.shape[1] > 0
+        assert np.any(np.isfinite(data) & (data > 0)), (
+            "Expected positive canopy heights over Spessart forest, "
+            f"but got: unique vals = {np.unique(data[np.isfinite(data)])[:10]}"
+        )
+        for key in ("height", "width", "transform", "count", "dtype"):
+            assert key in prof, f"Profile missing key '{key}'"
+
+
+# ===========================================================================
+# 7. Integration test – real WorldCover tile download (requires network)
 # ===========================================================================
 
 class TestRoughnessMapRealCoordinates:
@@ -1167,7 +1270,7 @@ class TestRoughnessMapRealCoordinates:
 
 
 # ===========================================================================
-# 5. Integration test – coordinates from the user's config file
+# 8. Integration test – coordinates from the user's config file
 # ===========================================================================
 
 def _load_coordinates_from_config(config_path: str) -> list[tuple[float, float, str]]:
