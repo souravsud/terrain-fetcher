@@ -32,7 +32,7 @@ _WORLDCOVER_GRID_URL = (
 # ETH Global Canopy Height 2020 — 3°×3° Cloud-Optimised GeoTIFFs
 # Lang et al. (2023), 10 m resolution, values in metres (uint8; 255 = nodata).
 _ETH_CANOPY_URL = (
-    "https://libdrive.ethz.ch/index.php/s/cO8or7iOe5dT2Fn"
+    "https://libdrive.ethz.ch/index.php/s/cO8or7iOe5dT2Rt"
     "/download?path=%2F3deg_cogs&files=ETH_GlobalCanopyHeight_10m_2020_{tile}_Map.tif"
 )
 _ETH_CANOPY_NODATA = 255  # ETH uint8 nodata sentinel
