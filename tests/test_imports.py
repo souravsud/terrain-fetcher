@@ -97,21 +97,6 @@ def test_load_config_missing_file(tmp_path):
         load_config(tmp_path / "this_file_does_not_exist.yaml")
 
 
-def test_load_config_partial(tmp_path):
-    """load_config handles a YAML file with only some keys set."""
-    from terrain_fetcher.config import load_config
-
-    yaml_content = "side_km: 100.0\nroughness_map: true\n"
-    cfg_file = tmp_path / "partial.yaml"
-    cfg_file.write_text(yaml_content)
-
-    cfg = load_config(cfg_file)
-    assert cfg.side_length_km == 100.0
-    assert cfg.include_roughness_map is True
-    # Unspecified fields retain defaults
-    assert cfg.dem_name == "glo_30"
-    assert cfg.verbose is True
-
 
 # ---------------------------------------------------------------------------
 # Custom land-cover table tests

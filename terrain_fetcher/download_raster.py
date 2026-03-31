@@ -31,8 +31,18 @@ _WORLDCOVER_GRID_URL = (
 
 # ETH Global Canopy Height 2020 — 3°×3° Cloud-Optimised GeoTIFFs
 # Lang et al. (2023), 10 m resolution, values in metres (uint8; 255 = nodata).
+# Share hosted on ETH Zürich libdrive (OwnCloud); token is the public share ID.
+_ETH_SHARE_TOKEN = "cO8or7iOe5dT2Rt"
+# Primary access: OwnCloud WebDAV endpoint honours HTTP Range requests, so
+# GDAL's /vsicurl/ can read only the specific COG tile blocks it needs.
+_ETH_CANOPY_WEBDAV_URL = (
+    "https://libdrive.ethz.ch/public.php/webdav"
+    "/3deg_cogs/ETH_GlobalCanopyHeight_10m_2020_{tile}_Map.tif"
+)
+# Fallback access: plain download URL — OwnCloud returns 404 for Range-GETs on
+# this endpoint, so it requires /vsicurl_streaming/ (sequential read, slower).
 _ETH_CANOPY_URL = (
-    "https://libdrive.ethz.ch/index.php/s/cO8or7iOe5dT2Rt"
+    f"https://libdrive.ethz.ch/index.php/s/{_ETH_SHARE_TOKEN}"
     "/download?path=%2F3deg_cogs&files=ETH_GlobalCanopyHeight_10m_2020_{tile}_Map.tif"
 )
 _ETH_CANOPY_NODATA = 255  # ETH uint8 nodata sentinel
@@ -170,14 +180,16 @@ def _canopy_tile_names(bounds: list) -> list[str]:
 def stitch_canopy_tiles(bounds: list) -> tuple[np.ndarray | None, dict | None]:
     """Fetch and crop ETH Global Canopy Height tiles for *bounds*.
 
-    Uses GDAL's ``/vsicurl_streaming/`` driver against the Cloud-Optimised
-    GeoTIFFs hosted on ETH Zürich libdrive (OwnCloud public share).  The
-    streaming driver sends a plain sequential GET rather than HTTP Range
-    requests, which is necessary because the OwnCloud ``download?…&files=…``
-    endpoint returns HTTP 404 for any Range-GET even though the share is
-    publicly accessible.  Because the tiles are true COGs (small overviews
-    near the start of the file), only the first few MB are streamed to
-    service a small spatial window — not the full ~700 MB tile.
+    Access strategy (tried in order for each tile):
+
+    1. **OwnCloud WebDAV endpoint** – WebDAV is spec-required to support HTTP
+       Range requests, so GDAL's ``/vsicurl/`` driver can read only the COG
+       tile blocks it needs (fast path, typically a few seconds per tile).
+       Uses HTTP Basic auth with the public share token as username.
+    2. **Plain download URL via** ``/vsicurl_streaming/`` – sends a sequential
+       GET (no Range header).  Always works, but must stream sequentially up to
+       the required byte offset within the 700 MB tile, so it is much slower.
+       Used only when the WebDAV endpoint is unreachable or returns an error.
 
     Returns ``(data_float32_m, profile)`` on success, or ``(None, None)`` when
     no tiles are available for the requested area (e.g. over open ocean).
@@ -191,48 +203,65 @@ def stitch_canopy_tiles(bounds: list) -> tuple[np.ndarray | None, dict | None]:
     tiles = _canopy_tile_names(bounds)
     tile_data: list[tuple[np.ndarray, dict]] = []
 
-    # The OwnCloud download endpoint returns HTTP 404 for byte-Range requests
-    # (which /vsicurl/ always sends) even though the files are accessible via a
-    # plain GET.  /vsicurl_streaming/ sends a plain sequential GET instead —
-    # the driver was designed for exactly this class of server.  Because the
-    # ETH tiles are Cloud-Optimised GeoTIFFs the data for a small window sits
-    # near the beginning of the file, so streaming is efficient in practice.
-    gdal_opts = dict(
-        GDAL_HTTP_TIMEOUT="120",        # stream up to ~120 MB at 1 MB/s
-        GDAL_HTTP_CONNECTTIMEOUT="10",  # fail-fast on unreachable hosts
+    # WebDAV: short timeout so a non-responsive endpoint fails fast and we fall
+    # back to streaming without a long wait.  No retries — fall through
+    # immediately on the first error so the user doesn't wait twice.
+    _webdav_gdal_opts = dict(
+        GDAL_HTTP_USERPWD=f"{_ETH_SHARE_TOKEN}:",  # token as username, empty password
+        CPL_VSIL_CURL_USE_HEAD="NO",
+        GDAL_HTTP_TIMEOUT="15",
+        GDAL_HTTP_CONNECTTIMEOUT="10",
+        GDAL_HTTP_MAX_RETRY="0",
+        GDAL_HTTP_RETRY_DELAY="1",
+    )
+    # Streaming fallback: longer timeout to allow streaming up to ~120 MB.
+    _stream_gdal_opts = dict(
+        GDAL_HTTP_TIMEOUT="120",
+        GDAL_HTTP_CONNECTTIMEOUT="10",
         GDAL_HTTP_MAX_RETRY="2",
         GDAL_HTTP_RETRY_DELAY="3",
     )
 
     for tile in tiles:
-        url = _ETH_CANOPY_URL.format(tile=tile)
-        vsi_url = f"/vsicurl_streaming/{url}"
-        try:
-            with rasterio.Env(**gdal_opts):
-                with rasterio.open(vsi_url) as src:
-                    win = rasterio.windows.from_bounds(
-                        min_lon, min_lat, max_lon, max_lat,
-                        src.transform,
-                    ).round_lengths().round_offsets()
-                    if win.width <= 0 or win.height <= 0:
-                        continue
-                    # boundless=True fills out-of-file pixels with nodata
-                    data = src.read(1, window=win, boundless=True,
-                                   fill_value=_ETH_CANOPY_NODATA)
-                    tf = src.window_transform(win)
-                    prof = src.profile.copy()
-                    prof.update(
-                        height=data.shape[0],
-                        width=data.shape[1],
-                        transform=tf,
-                        dtype=rasterio.uint8,
-                        count=1,
-                        nodata=_ETH_CANOPY_NODATA,
-                    )
-                    tile_data.append((data, prof))
-        except Exception as exc:
-            print(f"    Warning: ETH canopy tile {tile} unavailable: {exc}")
-            continue
+        _attempts = [
+            (f"/vsicurl/{_ETH_CANOPY_WEBDAV_URL.format(tile=tile)}",     _webdav_gdal_opts),
+            (f"/vsicurl_streaming/{_ETH_CANOPY_URL.format(tile=tile)}", _stream_gdal_opts),
+        ]
+        read_ok = False
+        skip_tile = False
+        last_exc: Exception | None = None
+        for vsi_url, gdal_opts in _attempts:
+            try:
+                with rasterio.Env(**gdal_opts):
+                    with rasterio.open(vsi_url) as src:
+                        win = rasterio.windows.from_bounds(
+                            min_lon, min_lat, max_lon, max_lat,
+                            src.transform,
+                        ).round_lengths().round_offsets()
+                        if win.width <= 0 or win.height <= 0:
+                            skip_tile = True
+                            break
+                        # boundless=True fills out-of-file pixels with nodata
+                        data = src.read(1, window=win, boundless=True,
+                                       fill_value=_ETH_CANOPY_NODATA)
+                        tf = src.window_transform(win)
+                        prof = src.profile.copy()
+                        prof.update(
+                            height=data.shape[0],
+                            width=data.shape[1],
+                            transform=tf,
+                            dtype=rasterio.uint8,
+                            count=1,
+                            nodata=_ETH_CANOPY_NODATA,
+                        )
+                        tile_data.append((data, prof))
+                        read_ok = True
+                        break  # success — no need to try the fallback
+            except Exception as exc:
+                last_exc = exc
+
+        if not read_ok and not skip_tile:
+            print(f"    Warning: ETH canopy tile {tile} unavailable: {last_exc}")
 
     if not tile_data:
         return None, None
@@ -397,7 +426,7 @@ def _compute_ora_z0_d(
     return z0_data, d_data
 
 
-def _calculate_bounds(side_km, center_lat,center_lon):
+def _calculate_bounds(side_km, center_lat, center_lon):
     
     half = (side_km * 1000) / 2
     
