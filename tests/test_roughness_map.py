@@ -11,20 +11,52 @@ Quality and mapping tests are parametrized over every supported table
 (``GWA4`` via windkit and ``custom`` via ``landcover_roughness.csv``) so that
 both tables are held to exactly the same correctness bar automatically.
 
-Diagnostic plots are written to ``tests/plots/`` (created automatically) every
-time the relevant tests run.  View them directly after a test run::
+Roughness computation strategy
+-------------------------------
+* **GWA4 table**: the ORA (Obstacle Roughness Assessment) bivariate model is
+  used for all tests.  Tree pixels (code 10) receive ``z₀ = 0.1 × h`` (capped
+  at 3 m) from the ETH Global Canopy Height dataset; other classes use the
+  GWA4 lookup value.  Tests that supply synthetic landcover arrays also supply
+  a matching synthetic canopy-height array so that all ORA branches are
+  exercised (below cap, at cap, above cap, and the zero-height fallback).
+* **custom table**: a straight vectorised lookup is used (no ORA) because the
+  custom table may define code 10 differently.
+
+Diagnostic plots
+-----------------
+Plots are written to ``tests/plots/`` (created automatically) every time the
+relevant tests run::
 
     pytest tests/test_roughness_map.py -v -s
     # → tests/plots/lookup_table_GWA4.png
     # → tests/plots/lookup_table_custom.png
-    # → tests/plots/synthetic_patch_GWA4.png
-    # → tests/plots/synthetic_patch_custom.png
+    # → tests/plots/synthetic_patch_GWA4.png   (3-panel: LC + canopy + z₀)
+    # → tests/plots/synthetic_patch_custom.png  (2-panel: LC + z₀)
     # → tests/plots/canopy_height_vs_z0.png
 
 For the network-dependent integration plots (real WorldCover tiles)::
 
     pytest tests/test_roughness_map.py -v -s --integration
-    # → tests/plots/real_<label>.png  (one per parametrized location)
+    # → tests/plots/real_<label>.png  (3-panel when ETH canopy is available)
+    # → tests/plots/config_<label>.png  (3-panel for GWA4, 2-panel for custom)
+
+Network-dependent test latency
+-------------------------------
+``--integration`` tests download data from two external sources:
+
+1. **ESA WorldCover grid index** (``esa_worldcover_{year}_grid.geojson``) –
+   a ~4 MB GeoJSON file fetched once per test run to identify which 3°×3°
+   WorldCover tiles overlap the requested area.  On a slow connection this
+   alone can take 10–30 s.
+2. **WorldCover tile(s)** – large Cloud-Optimised GeoTIFFs served from ESA S3;
+   only the required spatial window is read via HTTP range requests, but the
+   initial connection overhead can still add several seconds per tile.
+3. **ETH canopy height tile(s)** – fetched from ETH Zürich libdrive; same
+   range-request approach, similar latency.
+
+The delay is therefore **network-speed dependent and not a code issue**.  A
+first run on a fast connection typically completes in under a minute; on a
+slow or metered connection it may take several minutes.
 
 """
 
@@ -246,34 +278,45 @@ def _plot_lookup_table_bar_chart(
 
 def _plot_landcover_and_roughness(
     lc_data: np.ndarray,
-    lc_code_to_z0: dict,
+    z0_data: np.ndarray,
     title_prefix: str,
     out_stem: str,
+    canopy_data: np.ndarray | None = None,
 ) -> None:
-    """Save a side-by-side figure: landcover classification and roughness map.
+    """Save a diagnostic figure combining landcover, optional canopy height,
+    and the final roughness length z₀.
 
-    Left panel – categorical landcover map coloured with official ESA WorldCover
-    colours; unknown/nodata pixels shown in grey.
+    When *canopy_data* is provided (GWA4 + ORA path) a **three-panel** figure
+    is saved:
 
-    Right panel – continuous roughness length z₀ map (viridis); NaN pixels
-    (unmapped codes) highlighted in red with an annotation.
+    * Panel 1 – categorical landcover map (ESA WorldCover colours).
+    * Panel 2 – canopy height *h* (m); pixels with h ≤ 0 or NaN shown grey.
+    * Panel 3 – roughness length z₀ (m, viridis); NaN pixels in red.
+
+    Without *canopy_data* (custom-table / lookup-only path) a **two-panel**
+    figure is saved (panels 1 and 3 only).
 
     Parameters
     ----------
     lc_data:
         2-D ``uint8`` array of ESA WorldCover class codes.
-    lc_code_to_z0:
-        Mapping from class code to z₀ value (from :func:`_build_lc_code_to_z0`).
+    z0_data:
+        Pre-computed 2-D float32 roughness-length array aligned to *lc_data*.
+        Produced by :func:`_compute_ora_z0_d` (GWA4) or a vectorised lookup
+        (custom tables).
     title_prefix:
         Short descriptor used in subplot titles.
     out_stem:
         Output filename stem (without extension).  Saved under ``tests/plots/``.
+    canopy_data:
+        Optional 2-D float32 canopy-height array aligned to *lc_data*.
+        When given a third panel is added showing tree heights.
     """
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
     plt.switch_backend("Agg")
 
-    z0_data = np.vectorize(lambda c: lc_code_to_z0.get(int(c)))(lc_data).astype(float)
+    z0_float = np.asarray(z0_data, dtype=float)
     unique_codes = sorted(int(c) for c in np.unique(lc_data))
 
     # --- build discrete colormap from official ESA colours ---
@@ -282,7 +325,9 @@ def _plot_landcover_and_roughness(
     bounds_lc = [c - 0.5 for c in unique_codes] + [unique_codes[-1] + 0.5]
     norm_lc = BoundaryNorm(bounds_lc, len(unique_codes))
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    n_panels = 3 if canopy_data is not None else 2
+    fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 5))
+    axes = list(axes)  # always a list so indexing is uniform
 
     # Panel 1: landcover classification
     axes[0].imshow(lc_data, cmap=cmap_lc, norm=norm_lc, interpolation="nearest")
@@ -298,21 +343,41 @@ def _plot_landcover_and_roughness(
     ]
     axes[0].legend(handles=patches, loc="upper right", fontsize=7, framealpha=0.85)
 
-    # Panel 2: roughness length z0
+    ax_idx = 1
+
+    # Panel 2 (optional): canopy height
+    if canopy_data is not None:
+        h_display = np.where(
+            (canopy_data > 0) & np.isfinite(canopy_data), canopy_data, np.nan
+        )
+        cmap_h = plt.cm.YlGn.copy()
+        cmap_h.set_bad(color="#dddddd")
+        im_h = axes[ax_idx].imshow(
+            h_display, cmap=cmap_h, interpolation="nearest", vmin=0
+        )
+        axes[ax_idx].set_title(
+            f"{title_prefix}\nCanopy height  h  (m)\n(grey = non-tree / no data)"
+        )
+        axes[ax_idx].set_xlabel("pixel column")
+        axes[ax_idx].set_ylabel("pixel row")
+        plt.colorbar(im_h, ax=axes[ax_idx], label="h (m)", shrink=0.85)
+        ax_idx += 1
+
+    # Last panel: roughness length z0
     cmap_z0 = plt.cm.viridis.copy()
     cmap_z0.set_bad(color="red", alpha=0.8)  # NaN → red
-    im = axes[1].imshow(z0_data, cmap=cmap_z0, interpolation="nearest")
-    axes[1].set_title(f"{title_prefix}\nRoughness length  z₀  (m)")
-    axes[1].set_xlabel("pixel column")
-    axes[1].set_ylabel("pixel row")
-    plt.colorbar(im, ax=axes[1], label="z₀ (m)", shrink=0.85)
+    im = axes[ax_idx].imshow(z0_float, cmap=cmap_z0, interpolation="nearest")
+    axes[ax_idx].set_title(f"{title_prefix}\nRoughness length  z₀  (m)")
+    axes[ax_idx].set_xlabel("pixel column")
+    axes[ax_idx].set_ylabel("pixel row")
+    plt.colorbar(im, ax=axes[ax_idx], label="z₀ (m)", shrink=0.85)
 
-    nan_count = int(np.isnan(z0_data).sum())
+    nan_count = int(np.isnan(z0_float).sum())
     if nan_count:
-        axes[1].text(
+        axes[ax_idx].text(
             0.02, 0.02,
             f"⚠ {nan_count} NaN pixel(s) – unmapped code",
-            transform=axes[1].transAxes,
+            transform=axes[ax_idx].transAxes,
             fontsize=8, color="red", va="bottom",
             bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85),
         )
@@ -538,20 +603,73 @@ class TestZ0MappingWithSyntheticData:
     ):
         """Print a per-code breakdown for a synthetic landcover array.
 
-        This mirrors what you would see for a real tile – run with ``pytest -s``
-        to inspect the diagnostic output.
-        """
-        lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
+        For **GWA4** the ORA bivariate model is applied via
+        :func:`~terrain_fetcher.download_raster._compute_ora_z0_d` with a
+        paired canopy-height array.  Tree pixels at heights 5, 12, 25, 30, 40,
+        45 m (and zero-height fallback pixels) are included so that all
+        branches of the ORA decision tree are exercised in a single test run.
+        A **three-panel** diagnostic figure is saved
+        (landcover + canopy height + roughness map).
 
-        # Simulate a small patch with realistic WorldCover codes plus a nodata pixel
+        For **custom** tables a straight vectorised lookup is used (no ORA,
+        because the custom table may define code 10 differently).  A
+        **two-panel** figure is saved (landcover + roughness map).
+        """
+        from terrain_fetcher.download_raster import _compute_ora_z0_d
+
+        if table_name == "custom":
+            lct = load_custom_landcover_table(custom_path)
+            lc_code_to_z0 = {lc_id: params["z0"] for lc_id, params in lct.items()}
+        else:
+            lct = wk.get_landcover_table(table_name)
+            lc_code_to_z0 = _build_lc_code_to_z0(table_name)
+
+        # Synthetic landcover patch (5 rows × 6 cols).
+        # Code 10 (Tree cover) appears in a 3×3 block so that different canopy
+        # heights can be assigned to adjacent tree pixels.
         lc_data = np.array(
-            [[30, 30, 40, 40, 50],
-             [30, 10, 10, 40, 50],
-             [80, 80, 30, 40, 60],
-             [80, 80, 30, 30, 255]],  # 255 = nodata / unknown; absent from all tables
+            [[30,  30,  40,  40, 50, 50],
+             [30,  10,  10,  10, 50, 20],
+             [80,  10,  10,  10, 60, 20],
+             [80,  10,  10,  10, 60, 20],
+             [80,  80,  30,  30, 30, 255]],  # 255 = nodata; absent from all tables
             dtype=np.uint8,
         )
 
+        # Canopy heights (m) for each pixel.
+        # Non-tree pixels carry 0 (irrelevant; ORA only acts on code-10 pixels).
+        # Tree-pixel heights cover every ORA branch (rows 1–3, cols 1–3):
+        #   col 1 │ col 2 │ col 3 │ ORA outcome
+        #  ───────┼───────┼───────┼──────────────────────────────────────────
+        #    5 m  │  12 m │  25 m │ z0 = 0.1×h  (below 3.0 m cap)
+        #   30 m  │  40 m │  45 m │ z0 = 3.0 m  (at / above cap)
+        #    0 m  │   0 m │   0 m │ z0 = table fallback (GWA4: 1.5 m)
+        h_data = np.array(
+            [[ 0,    0,    0,    0,   0,  0],
+             [ 0,    5.0, 12.0, 25.0, 0,  0],   # below cap
+             [ 0,   30.0, 40.0, 45.0, 0,  0],   # at/above cap
+             [ 0,    0.0,  0.0,  0.0, 0,  0],   # zero → fallback
+             [ 0,    0,    0,    0,   0,  0]],
+            dtype=np.float32,
+        )
+
+        # ------------------------------------------------------------------ #
+        # Compute z0                                                           #
+        # ------------------------------------------------------------------ #
+        if table_name == "GWA4":
+            # ORA bivariate model: tree heights drive z0 for code-10 pixels
+            z0_data, _ = _compute_ora_z0_d(lc_data, h_data, lct)
+            canopy_vis = h_data  # third panel in the diagnostic figure
+        else:
+            # Non-GWA4 (custom) tables: straight lookup-table mapping
+            z0_data = np.vectorize(
+                lambda c: float(lc_code_to_z0.get(int(c), np.nan))
+            )(lc_data).astype(np.float32)
+            canopy_vis = None
+
+        # ------------------------------------------------------------------ #
+        # Print per-code breakdown                                             #
+        # ------------------------------------------------------------------ #
         unique_codes, counts = np.unique(lc_data, return_counts=True)
         total = lc_data.size
 
@@ -560,7 +678,7 @@ class TestZ0MappingWithSyntheticData:
         else:
             table_info = f"windkit=={wk.__version__}"
         _print_breakdown_header(
-            "Landcover classification breakdown  (synthetic 4×5 patch)",
+            "Landcover classification breakdown  (synthetic 5×6 patch)",
             extra_lines=[f"Lookup table used: '{table_name}'  ({table_info})"],
         )
         print(f"{'Code':>6}  {'Pixels':>7}  {'%':>6}  {'z0 (m)':>8}  Class description")
@@ -586,15 +704,55 @@ class TestZ0MappingWithSyntheticData:
             print("  ✓ All codes in this patch have a valid z0 mapping.")
         print(f"{_divider()}\n")
 
+        # Extra: show ORA results per tree pixel (GWA4 only)
+        if table_name == "GWA4":
+            print("  ORA model results for tree pixels (code 10):")
+            for r, c in np.argwhere(lc_data == 10):
+                h_val = float(h_data[r, c])
+                z0_val = float(z0_data[r, c])
+                if h_val == 0:
+                    note = "  (h=0 → fallback)"
+                elif h_val * 0.1 >= 3.0:
+                    note = "  (capped at 3.0 m)"
+                else:
+                    note = ""
+                print(
+                    f"    pixel ({r},{c}): h={h_val:5.1f} m  →  z₀={z0_val:.4f} m{note}"
+                )
+            print()
+
         captured = capsys.readouterr()
         assert "Landcover classification breakdown" in captured.out
         assert "NOT IN LOOKUP" in captured.out  # 255 is absent from every table
 
+        # --- ORA model assertions (GWA4 only) ---
+        # Expected z0 is derived directly from the ORA formula so that the
+        # assertions stay in sync with the h_data values automatically.
+        if table_name == "GWA4":
+            tree_fallback = float(
+                {lc_id: float(params.get("z0", 0.0)) for lc_id, params in lct.items()
+                 if params is not None}.get(10, 1.5)
+            )
+            for (r, c), h_val in [
+                ((1, 1),  5.0), ((1, 2), 12.0), ((1, 3), 25.0),  # below cap
+                ((2, 1), 30.0), ((2, 2), 40.0), ((2, 3), 45.0),  # at / above cap
+            ]:
+                expected = min(0.1 * h_val, 3.0)
+                assert float(z0_data[r, c]) == pytest.approx(expected, abs=1e-5), (
+                    f"pixel ({r},{c}) h={h_val} m: expected z0={expected:.4f}"
+                )
+            # Zero-height tree pixels → GWA4 table fallback value
+            for c in (1, 2, 3):
+                assert float(z0_data[3, c]) == pytest.approx(tree_fallback, abs=1e-5), (
+                    f"pixel (3,{c}) h=0: expected fallback z0={tree_fallback}"
+                )
+
         # --- save diagnostic plots ---
         _plot_landcover_and_roughness(
-            lc_data, lc_code_to_z0,
-            title_prefix=f"Synthetic 4×5 patch ({table_name})",
+            lc_data, z0_data,
+            title_prefix=f"Synthetic 5×6 patch ({table_name})",
             out_stem=f"synthetic_patch_{table_name}",
+            canopy_data=canopy_vis,
         )
         out_path = _PLOTS_DIR / f"synthetic_patch_{table_name}.png"
         assert out_path.exists(), f"Expected plot not found at {out_path}"
@@ -862,8 +1020,13 @@ class TestRoughnessMapRealCoordinates:
     def test_landcover_codes_and_z0_for_real_location(
         self, lat, lon, label, integration, tmp_path, capsys
     ):
-        """Download WorldCover tiles for *lat*/*lon*, print landcover codes
-        found in the raw data and show the z0 lookup for each.
+        """Download WorldCover + ETH canopy tiles for *lat*/*lon*, compute z₀
+        via the ORA bivariate model, and save a three-panel diagnostic figure
+        (landcover + canopy height + roughness map).
+
+        When ETH canopy tiles are unavailable for the area the ORA model falls
+        back to the GWA4 table value for tree pixels and the figure shows two
+        panels instead of three.
 
         Pass ``--integration`` to enable this test.
         """
@@ -871,6 +1034,9 @@ class TestRoughnessMapRealCoordinates:
             _WORLDCOVER_GRID_URL,
             _calculate_bounds,
             stitch_tiles,
+            stitch_canopy_tiles,
+            _align_to_reference,
+            _compute_ora_z0_d,
         )
         import geopandas as gpd
         from shapely.geometry import Polygon
@@ -895,17 +1061,30 @@ class TestRoughnessMapRealCoordinates:
             ],
         )
 
-        # --- identify tiles ---
+        # --- identify and download WorldCover tiles ---
+        # NOTE: gpd.read_file(grid_url) downloads a ~4 MB GeoJSON grid index
+        # from ESA S3 – this single call accounts for most of the test latency.
         grid = gpd.read_file(grid_url)
         aoi = Polygon([(lon_, lat_) for lat_, lon_ in corners])
         tiles = grid[grid.intersects(aoi)].ll_tile.tolist()
         print(f"\n  WorldCover tiles required: {tiles}")
 
-        # --- download and stitch ---
-        data_lc, _profile = stitch_tiles(tiles, version, year, bounds)
+        data_lc, profile_lc = stitch_tiles(tiles, version, year, bounds)
 
-        # --- build z0 mapping ---
+        # --- download ETH canopy height tiles ---
+        print("  Downloading ETH canopy height tiles...")
+        data_canopy, profile_canopy = stitch_canopy_tiles(bounds)
+        if data_canopy is not None:
+            print(f"  Canopy tile shape: {data_canopy.shape}")
+            h = _align_to_reference(data_canopy, profile_canopy, profile_lc)
+        else:
+            print("  No ETH canopy tiles available – ORA will use table fallback for trees.")
+            h = None
+
+        # --- compute z0 via ORA model ---
+        lct = wk.get_landcover_table(table_name)
         lc_code_to_z0 = _build_lc_code_to_z0(table_name)
+        z0_data, _ = _compute_ora_z0_d(data_lc, h, lct)
 
         # --- analyse the raw classifications ---
         unique_codes, counts = np.unique(data_lc, return_counts=True)
@@ -954,9 +1133,10 @@ class TestRoughnessMapRealCoordinates:
         import re
         out_stem = "real_" + re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
         _plot_landcover_and_roughness(
-            data_lc, lc_code_to_z0,
+            data_lc, z0_data,
             title_prefix=f"{label}  ({side_km} km × {side_km} km)",
             out_stem=out_stem,
+            canopy_data=h,
         )
         out_path = _PLOTS_DIR / f"{out_stem}.png"
         assert out_path.exists(), f"Expected plot not found at {out_path}"
@@ -1016,6 +1196,22 @@ class TestRoughnessMapFromConfig:
     (path to a terrain-fetcher YAML config).  The test is silently skipped
     when either flag is absent or when the config contains no coordinates.
 
+    **Roughness strategy** (mirrors :func:`download_square_data`):
+
+    * ``land_cover_table: GWA4`` (default) → ORA bivariate model; ETH canopy
+      height tiles are also downloaded; diagnostic figure has **3 panels**
+      (landcover + canopy height + roughness map).
+    * Any other table (e.g. ``custom``) → straight vectorised lookup; figure
+      has **2 panels** (landcover + roughness map).
+
+    **Network latency** – the first step of any ``--integration`` run downloads
+    the ESA WorldCover grid GeoJSON index (~4 MB from ESA S3) via
+    ``geopandas.read_file(grid_url)``.  This is a one-time cost per test
+    session and typically takes 5–30 s depending on your connection speed.
+    Subsequent per-coordinate steps download the WorldCover tile(s) and, for
+    GWA4, the matching ETH canopy tile(s).  The total delay is therefore
+    **network-speed dependent** and not a code issue.
+
     Run::
 
         pytest tests/test_roughness_map.py --integration --config config.yaml -v -s
@@ -1023,7 +1219,7 @@ class TestRoughnessMapFromConfig:
 
     def test_landcover_and_roughness_from_config(self, request, capsys):
         """For each coordinate found in ``--config``, download WorldCover tiles,
-        validate the z₀ mapping, and save diagnostic plots to ``tests/plots/``.
+        compute z₀ (ORA for GWA4; lookup for custom), and save diagnostic plots.
 
         *Skipped* when ``--integration`` is absent, ``--config`` is absent, or
         the config file contains no parseable coordinates.
@@ -1046,6 +1242,9 @@ class TestRoughnessMapFromConfig:
             _WORLDCOVER_GRID_URL,
             _calculate_bounds,
             stitch_tiles,
+            stitch_canopy_tiles,
+            _align_to_reference,
+            _compute_ora_z0_d,
         )
         import geopandas as gpd
         import re
@@ -1074,8 +1273,21 @@ class TestRoughnessMapFromConfig:
                 # Default: landcover_roughness.csv next to the config file
                 custom_path = str(_Path(config_path).parent / _DEFAULT_CUSTOM_TABLE_FILENAME)
 
+        # Build the lookup dict (used for breakdown tables and custom-table z0)
         lc_code_to_z0 = _build_lc_code_to_z0(table_name, custom_path=custom_path)
+
+        # Load the full land-cover table object (needed for ORA model)
+        if table_name == "custom":
+            lct = load_custom_landcover_table(custom_path)
+        else:
+            lct = wk.get_landcover_table(table_name)
+
+        use_ora = (table_name == "GWA4")
+
+        # Download the grid GeoJSON once (main source of per-run latency).
+        # NOTE: This is a ~4 MB file from ESA S3; see class docstring for details.
         grid_url = _WORLDCOVER_GRID_URL.format(version=version, year=year)
+        print(f"\n  Fetching WorldCover grid index from: {grid_url}")
         grid = gpd.read_file(grid_url)
 
         failures: list[str] = []
@@ -1095,6 +1307,7 @@ class TestRoughnessMapFromConfig:
                     f"Source    : ESA WorldCover {year} {version}",
                     f"Grid URL  : {grid_url}",
                     f"LC table  : {lc_table_desc}",
+                    f"ORA model : {'yes (GWA4)' if use_ora else 'no (plain lookup)'}",
                 ] + ([] if table_name == "custom" else [f"windkit   : {wk.__version__}"]),
             )
 
@@ -1102,7 +1315,30 @@ class TestRoughnessMapFromConfig:
             tiles = grid[grid.intersects(aoi)].ll_tile.tolist()
             print(f"\n  WorldCover tiles required: {tiles}")
 
-            data_lc, _profile = stitch_tiles(tiles, version, year, bounds)
+            data_lc, profile_lc = stitch_tiles(tiles, version, year, bounds)
+
+            # ---- z0 computation ----
+            if use_ora:
+                # GWA4: bivariate ORA model with ETH canopy height data
+                print("  Downloading ETH canopy height tiles...")
+                data_canopy, profile_canopy = stitch_canopy_tiles(bounds)
+                if data_canopy is not None:
+                    print(f"  Canopy tile shape: {data_canopy.shape}")
+                    h = _align_to_reference(data_canopy, profile_canopy, profile_lc)
+                else:
+                    print(
+                        "  No ETH canopy tiles available – "
+                        "ORA will use table fallback for trees."
+                    )
+                    h = None
+                z0_data, _ = _compute_ora_z0_d(data_lc, h, lct)
+                canopy_vis = h
+            else:
+                # Non-GWA4 (custom): straight vectorised lookup
+                z0_data = np.vectorize(
+                    lambda c: float(lc_code_to_z0.get(int(c), np.nan))
+                )(data_lc).astype(np.float32)
+                canopy_vis = None
 
             unique_codes, counts = np.unique(data_lc, return_counts=True)
             total = data_lc.size
@@ -1153,14 +1389,15 @@ class TestRoughnessMapFromConfig:
                     f"roughness map."
                 )
 
-            # Save diagnostic plots
+            # Save diagnostic plots (3-panel for GWA4/ORA, 2-panel for custom)
             out_stem = "config_" + re.sub(
                 r"[^a-z0-9]+", "_", label.lower()
             ).strip("_")
             _plot_landcover_and_roughness(
-                data_lc, lc_code_to_z0,
+                data_lc, z0_data,
                 title_prefix=label,
                 out_stem=out_stem,
+                canopy_data=canopy_vis,
             )
 
         assert failures == [], "\n".join(failures)
