@@ -1111,9 +1111,10 @@ class TestCanopyDownloadIntegration:
             "stitch_canopy_tiles returned None for the Spessart forest window.\n"
             "Possible causes:\n"
             "  1. Network unreachable (libdrive.ethz.ch DNS blocked).\n"
-            "  2. GDAL vsicurl cannot open the OwnCloud URL – check GDAL version "
-            "and CPL_VSIL_CURL_USE_HEAD setting.\n"
-            "  3. The ETH libdrive share has moved; verify the URL in _ETH_CANOPY_URL."
+            "  2. GDAL vsicurl_streaming could not read the tile – check that "
+            "GDAL_HTTP_TIMEOUT is sufficient and the server is reachable.\n"
+            "  3. The ETH libdrive share token or URL has changed; verify "
+            "_ETH_CANOPY_URL in download_raster.py."
         )
         assert prof is not None
         assert data.dtype == np.float32
