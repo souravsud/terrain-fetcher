@@ -167,7 +167,12 @@ def _canopy_tile_names(bounds: list) -> list[str]:
 
 
 def stitch_canopy_tiles(bounds: list) -> tuple[np.ndarray | None, dict | None]:
-    """Download and stitch ETH Global Canopy Height tiles, then crop to *bounds*.
+    """Fetch and crop ETH Global Canopy Height tiles for *bounds*.
+
+    Uses GDAL's vsicurl driver to issue HTTP range requests against the
+    Cloud-Optimised GeoTIFFs hosted on ETH Zürich libdrive.  Only the spatial
+    window of interest is downloaded (typically a few MB rather than the full
+    ~700 MB tile file), so this is fast even on a slow connection.
 
     Returns ``(data_float32_m, profile)`` on success, or ``(None, None)`` when
     no tiles are available for the requested area (e.g. over open ocean).
@@ -177,50 +182,71 @@ def stitch_canopy_tiles(bounds: list) -> tuple[np.ndarray | None, dict | None]:
     bounds:
         ``[min_lon, min_lat, max_lon, max_lat]`` in WGS-84 decimal degrees.
     """
+    min_lon, min_lat, max_lon, max_lat = bounds
     tiles = _canopy_tile_names(bounds)
-    paths: list[str] = []
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        for tile in tiles:
-            url = _ETH_CANOPY_URL.format(tile=tile)
-            try:
-                r = requests.get(url, timeout=120)
-            except requests.RequestException:
-                continue
-            if r.status_code == 200:
-                p = tmp_path / f"{tile}.tif"
-                p.write_bytes(r.content)
-                paths.append(str(p))
+    tile_data: list[tuple[np.ndarray, dict]] = []
 
-        if not paths:
-            return None, None
-
-        datasets = [rasterio.open(p) for p in paths]
+    for tile in tiles:
+        url = _ETH_CANOPY_URL.format(tile=tile)
+        vsi_url = f"/vsicurl/{url}"
         try:
-            mosaic, transform = merge(datasets)
-            prof = datasets[0].profile.copy()
-        finally:
-            for ds in datasets:
-                ds.close()
+            with rasterio.open(vsi_url) as src:
+                win = rasterio.windows.from_bounds(
+                    min_lon, min_lat, max_lon, max_lat,
+                    src.transform,
+                ).round_lengths().round_offsets()
+                if win.width <= 0 or win.height <= 0:
+                    continue
+                # boundless=True fills any out-of-file pixels with the nodata value
+                data = src.read(1, window=win, boundless=True, fill_value=255)
+                tf = src.window_transform(win)
+                prof = src.profile.copy()
+                prof.update(
+                    height=data.shape[0],
+                    width=data.shape[1],
+                    transform=tf,
+                    dtype=rasterio.uint8,
+                    count=1,
+                    nodata=255,
+                )
+                tile_data.append((data, prof))
+        except Exception as exc:
+            print(f"    Warning: ETH canopy tile {tile} unavailable: {exc}")
+            continue
 
-        prof.update(height=mosaic.shape[1], width=mosaic.shape[2], transform=transform)
+    if not tile_data:
+        return None, None
 
-        mosaic_file = tmp_path / "mosaic.tif"
-        with rasterio.open(mosaic_file, "w", **prof) as dst:
-            dst.write(mosaic)
+    if len(tile_data) == 1:
+        data, prof = tile_data[0]
+    else:
+        # Multiple adjacent tiles: stitch via rasterio.merge
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            paths = []
+            for i, (d, p) in enumerate(tile_data):
+                path = tmp_path / f"tile_{i}.tif"
+                with rasterio.open(path, "w", **p) as dst:
+                    dst.write(d, 1)
+                paths.append(str(path))
 
-        with rasterio.open(mosaic_file) as src:
-            win = rasterio.windows.from_bounds(*bounds, src.transform)
-            data = src.read(1, window=win)
-            tf = src.window_transform(win)
+            datasets = [rasterio.open(p) for p in paths]
+            try:
+                mosaic, transform = merge(datasets)
+                prof = datasets[0].profile.copy()
+            finally:
+                for ds in datasets:
+                    ds.close()
+
             prof.update(
-                height=data.shape[0],
-                width=data.shape[1],
-                transform=tf,
-                dtype=rasterio.float32,
-                nodata=255,
+                height=mosaic.shape[1],
+                width=mosaic.shape[2],
+                transform=transform,
+                dtype=rasterio.uint8,
                 count=1,
+                nodata=255,
             )
+            data = mosaic[0]
 
     # Replace ETH nodata (255) with NaN and convert to float32
     data_f = data.astype(np.float32)

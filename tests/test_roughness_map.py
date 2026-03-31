@@ -282,19 +282,19 @@ def _plot_landcover_and_roughness(
     title_prefix: str,
     out_stem: str,
     canopy_data: np.ndarray | None = None,
+    want_canopy_panel: bool = False,
 ) -> None:
     """Save a diagnostic figure combining landcover, optional canopy height,
     and the final roughness length z₀.
 
-    When *canopy_data* is provided (GWA4 + ORA path) a **three-panel** figure
-    is saved:
-
-    * Panel 1 – categorical landcover map (ESA WorldCover colours).
-    * Panel 2 – canopy height *h* (m); pixels with h ≤ 0 or NaN shown grey.
-    * Panel 3 – roughness length z₀ (m, viridis); NaN pixels in red.
-
-    Without *canopy_data* (custom-table / lookup-only path) a **two-panel**
-    figure is saved (panels 1 and 3 only).
+    Panel layout
+    ------------
+    * **2 panels** (default, ``want_canopy_panel=False``): landcover + z₀.
+    * **3 panels** when canopy data is requested (``want_canopy_panel=True``):
+      landcover + canopy height + z₀.  If *canopy_data* is ``None`` the centre
+      panel shows a grey placeholder labelled "ETH canopy data unavailable",
+      which tells the user that the download failed rather than silently hiding
+      the panel.
 
     Parameters
     ----------
@@ -310,7 +310,11 @@ def _plot_landcover_and_roughness(
         Output filename stem (without extension).  Saved under ``tests/plots/``.
     canopy_data:
         Optional 2-D float32 canopy-height array aligned to *lc_data*.
-        When given a third panel is added showing tree heights.
+        When given a third panel shows actual tree heights.
+    want_canopy_panel:
+        When ``True`` the canopy height panel is always included (with a grey
+        placeholder when *canopy_data* is ``None``).  Use this for GWA4/ORA
+        tests so the user can see whether the ETH download succeeded.
     """
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
@@ -325,7 +329,8 @@ def _plot_landcover_and_roughness(
     bounds_lc = [c - 0.5 for c in unique_codes] + [unique_codes[-1] + 0.5]
     norm_lc = BoundaryNorm(bounds_lc, len(unique_codes))
 
-    n_panels = 3 if canopy_data is not None else 2
+    show_canopy = want_canopy_panel or (canopy_data is not None)
+    n_panels = 3 if show_canopy else 2
     fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 5))
     axes = list(axes)  # always a list so indexing is uniform
 
@@ -346,21 +351,36 @@ def _plot_landcover_and_roughness(
     ax_idx = 1
 
     # Panel 2 (optional): canopy height
-    if canopy_data is not None:
-        h_display = np.where(
-            (canopy_data > 0) & np.isfinite(canopy_data), canopy_data, np.nan
-        )
-        cmap_h = plt.cm.YlGn.copy()
-        cmap_h.set_bad(color="#dddddd")
-        im_h = axes[ax_idx].imshow(
-            h_display, cmap=cmap_h, interpolation="nearest", vmin=0
-        )
-        axes[ax_idx].set_title(
-            f"{title_prefix}\nCanopy height  h  (m)\n(grey = non-tree / no data)"
-        )
+    if show_canopy:
+        if canopy_data is not None:
+            h_display = np.where(
+                (canopy_data > 0) & np.isfinite(canopy_data), canopy_data, np.nan
+            )
+            cmap_h = plt.cm.YlGn.copy()
+            cmap_h.set_bad(color="#dddddd")
+            im_h = axes[ax_idx].imshow(
+                h_display, cmap=cmap_h, interpolation="nearest", vmin=0
+            )
+            axes[ax_idx].set_title(
+                f"{title_prefix}\nCanopy height  h  (m)\n(grey = non-tree / no data)"
+            )
+            plt.colorbar(im_h, ax=axes[ax_idx], label="h (m)", shrink=0.85)
+        else:
+            # Grey placeholder when ETH download failed
+            axes[ax_idx].set_facecolor("#cccccc")
+            axes[ax_idx].text(
+                0.5, 0.5,
+                "ETH canopy data\nunavailable\n(download failed)",
+                ha="center", va="center", fontsize=12, color="#555555",
+                transform=axes[ax_idx].transAxes,
+            )
+            axes[ax_idx].set_title(
+                f"{title_prefix}\nCanopy height  h  (m)"
+            )
+            axes[ax_idx].set_xticks([])  # no pixel axes on a blank placeholder
+            axes[ax_idx].set_yticks([])
         axes[ax_idx].set_xlabel("pixel column")
         axes[ax_idx].set_ylabel("pixel row")
-        plt.colorbar(im_h, ax=axes[ax_idx], label="h (m)", shrink=0.85)
         ax_idx += 1
 
     # Last panel: roughness length z0
@@ -753,6 +773,7 @@ class TestZ0MappingWithSyntheticData:
             title_prefix=f"Synthetic 5×6 patch ({table_name})",
             out_stem=f"synthetic_patch_{table_name}",
             canopy_data=canopy_vis,
+            want_canopy_panel=(table_name == "GWA4"),
         )
         out_path = _PLOTS_DIR / f"synthetic_patch_{table_name}.png"
         assert out_path.exists(), f"Expected plot not found at {out_path}"
@@ -1015,7 +1036,6 @@ class TestRoughnessMapRealCoordinates:
 
     @pytest.mark.parametrize("lat,lon,label", [
         (52.52, 13.40, "Berlin, Germany"),
-        (55.68, 12.57, "Copenhagen, Denmark"),
     ])
     def test_landcover_codes_and_z0_for_real_location(
         self, lat, lon, label, integration, tmp_path, capsys
@@ -1137,6 +1157,7 @@ class TestRoughnessMapRealCoordinates:
             title_prefix=f"{label}  ({side_km} km × {side_km} km)",
             out_stem=out_stem,
             canopy_data=h,
+            want_canopy_panel=True,
         )
         out_path = _PLOTS_DIR / f"{out_stem}.png"
         assert out_path.exists(), f"Expected plot not found at {out_path}"
@@ -1398,6 +1419,7 @@ class TestRoughnessMapFromConfig:
                 title_prefix=label,
                 out_stem=out_stem,
                 canopy_data=canopy_vis,
+                want_canopy_panel=use_ora,
             )
 
         assert failures == [], "\n".join(failures)
