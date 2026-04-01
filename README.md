@@ -86,7 +86,8 @@ alongside the UTM rasters.
 
 ### Sample maps
 
-<!-- TODO: upload a plot of all downloaded maps and the final roughness map -->
+
+<img width="4983" height="1356" alt="roughnessMap_pipeline" src="docs/roughnessMap_pipeline.png" />
 
 ## Programmatic usage
 
