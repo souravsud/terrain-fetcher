@@ -26,6 +26,9 @@ side_km: 50.0                 # side length of the square extraction window in k
 # Roughness map settings
 # ---------------------------------------------------------------------------
 roughness_map: false          # true → also download and convert ESA WorldCover to z0
+                              #         ETH Global Canopy Height 2020 tiles are fetched
+                              #         automatically to apply the ORA model for tree pixels
+                              #         and produce a co-registered displacement-height raster
 worldcover_version: v100      # ESA WorldCover release tag (e.g. v100, v200)
 worldcover_year: 2020         # ESA WorldCover data year
 land_cover_table: GWA4        # windkit land-cover lookup table used for z0 conversion
