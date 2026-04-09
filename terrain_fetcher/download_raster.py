@@ -18,12 +18,15 @@ from shapely.geometry import Polygon
 from .reproject_raster import (
     get_utm_crs,
     reproject_raster_to_utm,
-    save_combined_metadata,
     _section_from_profile,
 )
-from .lc_table import load_custom_landcover_table
+from .utils import (
+    latlon_offset,
+    generate_filename,
+    save_combined_metadata,
+)
 
-R = 6_371_000.0  # Earth's mean radius in meters
+from .lc_table import load_custom_landcover_table
 
 _WORLDCOVER_TILE_URL = (
     "https://esa-worldcover.s3.eu-central-1.amazonaws.com"
@@ -84,47 +87,6 @@ class DEMDownloader:
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
-
-def format_coord(value: float, is_lat: bool, precision: int = 5) -> str:
-    """Format a latitude or longitude into a fixed-width, signed, filesystem-safe string."""
-    if is_lat:
-        hemi = "N" if value >= 0 else "S"
-        width = 2
-    else:
-        hemi = "E" if value >= 0 else "W"
-        width = 3
-
-    abs_val = abs(value)
-    deg = int(math.floor(abs_val))
-    frac = abs_val - deg
-    frac_int = int(round(frac * (10 ** precision)))
-
-    deg_str = f"{deg:0{width}d}"
-    frac_str = f"{frac_int:0{precision}d}"
-
-    return f"{hemi}{deg_str}_{frac_str}"
-
-def create_output_dir(lat: float, lon: float, index: int, root_folder: str) -> str:
-    #Save folder for each location
-    lat_str = format_coord(lat, is_lat=True, precision=3)
-    lon_str = format_coord(lon, is_lat=False, precision=3)
-    folder_name = f"terrain_{(index+1):04d}_{lat_str}_{lon_str}"
-    download_path = os.path.join(root_folder, folder_name)
-    
-    if os.path.exists(download_path):
-        return None
-    else:
-        os.makedirs(download_path)
-        return download_path
-
-def latlon_offset(lat: float, lon: float, dy_m: float, dx_m: float) -> tuple[float, float]:
-    """Move a point northwards by dy_m meters and eastwards by dx_m meters."""
-    dlat_rad = dy_m / R
-    dlon_rad = dx_m / (R * math.cos(math.radians(lat)))
-
-    new_lat = lat + math.degrees(dlat_rad)
-    new_lon = lon + math.degrees(dlon_rad)
-    return new_lat, new_lon
 
 def stitch_tiles(tiles, version, year, bounds):
     """Download and stitch ESA WorldCover tiles, then crop to *bounds*."""
@@ -461,19 +423,6 @@ def _calculate_bounds(side_km, center_lat, center_lon):
     bounds = [min_lon, min_lat, max_lon, max_lat]
 
     return bounds, corners
-
-def _generate_filename(index,center_lat, center_lon,out_dir,side_km, source, prefix):
-    
-    out_path = Path(out_dir)
-    out_path.mkdir(exist_ok=True, parents=True)
-    lat_str = format_coord(center_lat, is_lat=True, precision=3)
-    lon_str = format_coord(center_lon, is_lat=False, precision=3)
-    side_str = f"{side_km:.0f}km" if side_km % 1 == 0 else f"{side_km:.1f}km"
-    file_name = f"{prefix}_{(index+1):04d}_{source}_{lat_str}_{lon_str}_{side_str}.tif"
-    
-    out_file = out_path / file_name
-    
-    return out_file
         
 def _plot_map(data, profile, side_km, plot_name, out_dir):
     cmap = "viridis" if plot_name == "Terrain" else "tab20"
@@ -526,7 +475,7 @@ def download_square_data(
     if verbose:
         print(f"Target UTM CRS: {utm_crs}")
 
-    dem_out_file = _generate_filename(index, center_lat, center_lon, out_dir, side_km, dem_name, "terrain")
+    dem_out_file = generate_filename(index, center_lat, center_lon, out_dir, side_km, dem_name, "terrain")
 
     # ===== DEM PROCESSING =====
     if verbose:
@@ -573,10 +522,10 @@ def download_square_data(
     roughness_meta = None
     displacement_meta = None
     if config.include_roughness_map:
-        rmap_out_file = _generate_filename(
+        rmap_out_file = generate_filename(
             index, center_lat, center_lon, out_dir, side_km, "worldcover", "roughness"
         )
-        dmap_out_file = _generate_filename(
+        dmap_out_file = generate_filename(
             index, center_lat, center_lon, out_dir, side_km, "worldcover", "displacement"
         )
 

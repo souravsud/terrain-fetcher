@@ -39,10 +39,10 @@ land_cover_table: GWA4        # windkit land-cover lookup table used for z0 conv
 # ---------------------------------------------------------------------------
 # Output options
 # ---------------------------------------------------------------------------
-save_raw_files: true          # true → also save EPSG:4326 (raw) rasters alongside UTM output
+save_raw_files: false          # true → also save EPSG:4326 (raw) rasters alongside UTM output
 
 # ---------------------------------------------------------------------------
 # Debug / logging settings
 # ---------------------------------------------------------------------------
-verbose: true                 # true → print progress messages to stdout
+verbose: false                 # true → print progress messages to stdout
 show_plots: false             # true → save PNG plots of generated rasters

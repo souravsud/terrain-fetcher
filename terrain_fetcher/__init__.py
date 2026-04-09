@@ -12,7 +12,7 @@ def download_raster_data(lat, lon, index, out_dir, config):
 
 def create_output_dir(lat, lon, index, root_folder):
     """Create a location output folder if it does not already exist."""
-    from .download_raster import create_output_dir as _create_output_dir
+    from .utils import create_output_dir as _create_output_dir
 
     return _create_output_dir(lat, lon, index, root_folder)
 

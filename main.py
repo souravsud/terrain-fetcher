@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         try:
-            dem_file, roughness_file = downloader.download_single_location(
+            dem_file, roughness_file, displacement_file = downloader.download_single_location(
                 coord_lat, coord_lon, index, out_dir
             )
             success_count += 1
@@ -94,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  DEM: {dem_file}")
             if roughness_file:
                 print(f"  Roughness: {roughness_file}")
+            if displacement_file:
+                print(f"  Displacement: {displacement_file}")
         except Exception as exc:  # noqa: BLE001
             failure_count += 1
             print(
