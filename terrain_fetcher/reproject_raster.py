@@ -64,53 +64,62 @@ def reproject_raster_to_utm(data: np.ndarray, profile: dict, utm_crs: CRS, verbo
     
     return reprojected_data, utm_profile
 
-def save_utm_metadata(
-    source: str,
+def _section_from_profile(profile_utm: dict) -> dict:
+    """Extract bounds and resolution metadata from a UTM-reprojected rasterio profile."""
+    bounds_utm = array_bounds(
+        profile_utm['height'],
+        profile_utm['width'],
+        profile_utm['transform'],
+    )
+    return {
+        "bounds_utm": list(bounds_utm),
+        "resolution_m": profile_utm['transform'].a,
+    }
+
+
+def save_combined_metadata(
     output_file: Path,
     center_lat: float,
     center_lon: float,
-    profile_utm: dict
+    side_km: float,
+    utm_crs,
+    terrain: dict,
+    roughness: dict | None = None,
+    displacement: dict | None = None,
 ):
-    """
-    Calculate UTM metadata from reprojected profile and save to JSON
-    
+    """Save combined metadata for terrain (and optional roughness/displacement) to JSON.
+
     Args:
-        output_file: Path to the output GeoTIFF file
-        center_lat: Original center latitude
-        center_lon: Original center longitude
-        profile_utm: Rasterio profile dict from reprojected raster
+        output_file: Base path; ``.json`` replaces the suffix.
+        center_lat: Centre latitude in decimal degrees (WGS-84).
+        center_lon: Centre longitude in decimal degrees (WGS-84).
+        side_km: Side length of the square domain in kilometres.
+        utm_crs: Rasterio/pyproj CRS object for the output UTM projection.
+        terrain: Per-product metadata dict for the terrain/DEM layer.
+        roughness: Per-product metadata dict for the roughness (z0) layer, or None.
+        displacement: Per-product metadata dict for the displacement-height layer, or None.
     """
-    utm_crs = profile_utm['crs']
-    
-    # Calculate center coordinates in UTM
+    # Calculate centre coordinates in UTM
     transformer = Transformer.from_crs(CRS.from_epsg(4326), utm_crs, always_xy=True)
     center_utm_x, center_utm_y = transformer.transform(center_lon, center_lat)
-    
-    # Get bounds in UTM
-    bounds_utm = array_bounds(
-        profile_utm['height'], 
-        profile_utm['width'], 
-        profile_utm['transform']
-    )
-    
-    # Get resolution in meters
-    resolution_m = profile_utm['transform'].a
-    
-    # Prepare metadata
-    metadata = {
-        "data source" : source,
-        "center_latlon": [center_lat, center_lon],
+
+    metadata: dict = {
+        "center_lat": center_lat,
+        "center_lon": center_lon,
+        "side_km": side_km,
         "center_utm": [center_utm_x, center_utm_y],
         "utm_zone": utm_crs.to_string(),
         "epsg": utm_crs.to_epsg(),
-        "bounds_utm": list(bounds_utm),
-        "resolution_m": resolution_m,
-        "crs": "UTM"
+        "crs": "UTM",
+        "terrain": terrain,
     }
-    
-    # Save to JSON
+    if roughness is not None:
+        metadata["roughness"] = roughness
+    if displacement is not None:
+        metadata["displacement"] = displacement
+
     metadata_file = output_file.with_suffix('.json')
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)
-    
+
     print(f"Saved metadata to: {metadata_file}")

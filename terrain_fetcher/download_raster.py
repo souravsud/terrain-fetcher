@@ -15,7 +15,12 @@ from rasterio.merge import merge
 from rasterio.warp import reproject as _warp_reproject, Resampling
 from shapely.geometry import Polygon
 
-from .reproject_raster import get_utm_crs, reproject_raster_to_utm, save_utm_metadata
+from .reproject_raster import (
+    get_utm_crs,
+    reproject_raster_to_utm,
+    save_combined_metadata,
+    _section_from_profile,
+)
 from .lc_table import load_custom_landcover_table
 
 R = 6_371_000.0  # Earth's mean radius in meters
@@ -46,6 +51,18 @@ _ETH_CANOPY_URL = (
     "/download?path=%2F3deg_cogs&files=ETH_GlobalCanopyHeight_10m_2020_{tile}_Map.tif"
 )
 _ETH_CANOPY_NODATA = 255  # ETH uint8 nodata sentinel
+# Human-readable source reference for ETH canopy height data
+_ETH_CANOPY_SOURCE = (
+    "ETH Global Canopy Height 2020, Lang et al. (2023), "
+    "https://doi.org/10.1038/s41559-023-02206-6; "
+    f"tiles via https://libdrive.ethz.ch/index.php/s/{_ETH_SHARE_TOKEN}"
+)
+
+# ORA (Obstacle Roughness Assessment) model constants
+_ORA_Z0_TREE_FACTOR = 0.10       # z0 = factor × canopy height (h)
+_ORA_D_TREE_FACTOR = 2.0 / 3.0  # d  = factor × canopy height (h)
+_ORA_Z0_MAX_CAP_M = 3.0          # hard cap on z0 [m]
+_ORA_D_MAX_CAP_M = 25.0          # hard cap on displacement height [m]
 
 
 class DEMDownloader:
@@ -410,18 +427,18 @@ def _compute_ora_z0_d(
         is_tree_no_h = is_tree
 
     z0_data = np.where(
-        has_valid_h, 0.10 * h,
+        has_valid_h, _ORA_Z0_TREE_FACTOR * h,
         np.where(is_tree_no_h, tree_fallback_z0, z0_lookup),
     ).astype(np.float32)
 
     d_data = np.where(
-        has_valid_h, (2.0 / 3.0) * h,
+        has_valid_h, _ORA_D_TREE_FACTOR * h,
         0.0,
     ).astype(np.float32)
 
     # Physical caps
-    z0_data = np.clip(z0_data, 0.0, 3.0)
-    d_data = np.clip(d_data, 0.0, 25.0)
+    z0_data = np.clip(z0_data, 0.0, _ORA_Z0_MAX_CAP_M)
+    d_data = np.clip(d_data, 0.0, _ORA_D_MAX_CAP_M)
 
     return z0_data, d_data
 
@@ -541,7 +558,11 @@ def download_square_data(
 
     print(f"Saved terrain elevation map (UTM) to: {dem_out_file.resolve()}")
 
-    save_utm_metadata(dem_name, dem_out_file, center_lat, center_lon, profile_utm)
+    terrain_meta = {
+        "data_source": dem_name,
+        "file": dem_out_file.name,
+        **_section_from_profile(profile_utm),
+    }
 
     if config.show_plots:
         _plot_map(data_utm, profile_utm, side_km, "Terrain", out_dir)
@@ -549,6 +570,8 @@ def download_square_data(
     # ===== ROUGHNESS MAP PROCESSING =====
     rmap_out_file = None
     dmap_out_file = None
+    roughness_meta = None
+    displacement_meta = None
     if config.include_roughness_map:
         rmap_out_file = _generate_filename(
             index, center_lat, center_lon, out_dir, side_km, "worldcover", "roughness"
@@ -628,7 +651,6 @@ def download_square_data(
             dst.write(z0_data_utm, 1)
 
         print(f"Saved roughness map (UTM) to: {rmap_out_file.resolve()}")
-        save_utm_metadata(source, rmap_out_file, center_lat, center_lon, profile_z0_utm)
 
         d_data_utm, profile_d_utm = reproject_raster_to_utm(
             d_data, profile_lc, utm_crs, verbose
@@ -638,11 +660,47 @@ def download_square_data(
             dst.write(d_data_utm, 1)
 
         print(f"Saved displacement map (UTM) to: {dmap_out_file.resolve()}")
-        save_utm_metadata(source, dmap_out_file, center_lat, center_lon, profile_d_utm)
+
+        # Derive tree z0 fallback value from the configured land-cover table
+        lc_code_to_z0 = {
+            k: float(v.get("z0", 0.0)) for k, v in lct.items() if v is not None
+        }
+        tree_fallback_z0 = lc_code_to_z0.get(10, 1.5)
+
+        roughness_meta = {
+            "land_cover_source": source,
+            "land_cover_table": lc_table_name,
+            "canopy_height_source": _ETH_CANOPY_SOURCE,
+            "canopy_height_used": h is not None,
+            "z0_tree_factor": _ORA_Z0_TREE_FACTOR,
+            "z0_tree_fallback_m": tree_fallback_z0,
+            "z0_max_cap_m": _ORA_Z0_MAX_CAP_M,
+            "file": rmap_out_file.name,
+            **_section_from_profile(profile_z0_utm),
+        }
+        displacement_meta = {
+            "canopy_height_source": _ETH_CANOPY_SOURCE,
+            "canopy_height_used": h is not None,
+            "d_tree_factor": _ORA_D_TREE_FACTOR,
+            "d_max_cap_m": _ORA_D_MAX_CAP_M,
+            "file": dmap_out_file.name,
+            **_section_from_profile(profile_d_utm),
+        }
 
         if config.show_plots:
             _plot_map(z0_data_utm, profile_z0_utm, side_km, "Roughness", out_dir)
             _plot_map(d_data_utm, profile_d_utm, side_km, "Displacement", out_dir)
+
+    save_combined_metadata(
+        dem_out_file,
+        center_lat,
+        center_lon,
+        side_km,
+        utm_crs,
+        terrain=terrain_meta,
+        roughness=roughness_meta,
+        displacement=displacement_meta,
+    )
 
     return (
         str(dem_out_file.resolve()),
