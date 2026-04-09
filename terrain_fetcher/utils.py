@@ -1,8 +1,6 @@
 from pathlib import Path
 import math
 import os
-from pyproj import Transformer
-from rasterio.crs import CRS
 import json
 
 R = 6_371_000.0  # Earth's mean radius in meters
@@ -87,15 +85,11 @@ def save_combined_metadata(
         roughness: Per-product metadata dict for the roughness (z0) layer, or None.
         displacement: Per-product metadata dict for the displacement-height layer, or None.
     """
-    # Calculate centre coordinates in UTM
-    transformer = Transformer.from_crs(CRS.from_epsg(4326), utm_crs, always_xy=True)
-    center_utm_x, center_utm_y = transformer.transform(center_lon, center_lat)
 
     metadata: dict = {
         "center_lat": center_lat,
         "center_lon": center_lon,
         "side_km": side_km,
-        "center_utm": [center_utm_x, center_utm_y],
         "utm_zone": utm_crs.to_string(),
         "epsg": utm_crs.to_epsg(),
         "crs": "UTM",
